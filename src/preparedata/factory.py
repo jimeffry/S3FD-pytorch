@@ -4,13 +4,17 @@ from __future__ import division
 from __future__ import absolute_import
 from __future__ import print_function
 
+import sys
+import os
 
 from .egohand import HandDetection
 from .widerface import WIDERDetection
 from .vochead import VOCDetection, VOCAnnotationTransform
-from .config import cfg
+
 from .load_imgs import ReadDataset
 import torch
+sys.path.append(os.path.join(os.path.dirname(__file__),'../configs'))
+from config import cfg
 
 
 def dataset_factory(dataset):

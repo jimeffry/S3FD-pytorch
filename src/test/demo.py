@@ -17,11 +17,11 @@ import time
 import numpy as np
 from tqdm import tqdm
 from matplotlib import pyplot as plt
-
-from data.config import cfg
+sys.path.append(os.path.join(os.path.dirname(__file__),'../configs'))
+from config import cfg
+sys.path.append(os.path.join(os.path.dirname(__file__),'../network'))
 from s3fd import build_s3fd
 from torch.autograd import Variable
-from utils.augmentations import to_chw_bgr
 
 def parms():
     parser = argparse.ArgumentParser(description='s3df demo')

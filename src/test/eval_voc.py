@@ -31,12 +31,12 @@ if sys.version_info[0] == 2:
 else:
     import xml.etree.ElementTree as ET
 
-from PIL import Image
-sys.path.append(os.path.join(os.path.dirname(__file__),'../'))
-from data.config import cfg
+sys.path.append(os.path.join(os.path.dirname(__file__),'../configs'))
+from config import cfg
+sys.path.append(os.path.join(os.path.dirname(__file__),'../network'))
 from s3fd import build_s3fd
-from utils.augmentations import to_chw_bgr
-from data.vochead import VOCDetection, VOCAnnotationTransform
+sys.path.append(os.path.join(os.path.dirname(__file__),'../preparedata'))
+from vochead import VOCDetection, VOCAnnotationTransform
 
 
 def str2bool(v):
@@ -60,10 +60,12 @@ parser.add_argument('--voc_root',type=str, default=None,
                     help='Location of VOC root directory')
 parser.add_argument('--cleanup', default=True, type=str2bool,
                     help='Cleanup and remove results files following eval')
-parser.add_argument('--input_size', default='320', choices=['320', '512'],
-                    type=str, help='RefineDet320 or RefineDet512')
+parser.add_argument('--dataname', default='scut',
+                    type=str, help='val dataset name')
 parser.add_argument('--dataset', default='Part_A',
                     type=str, help='test dataset')
+parser.add_argument('--val_file', default='/wdc/LXY.data/',
+                    type=str, help='test file')
 
 args = parser.parse_args()
 
@@ -83,7 +85,7 @@ imgpath = os.path.join(args.voc_root, dataset, 'JPEGImages', '%s.jpg')
 imgsetpath = os.path.join(args.voc_root, dataset, 'ImageSets',
                           'Main', 'test.txt')
 labelmap = ['person']
-
+annopath = args.val_file
 
 def test_net(save_folder, net, dataset, top_k,thresh=0.05):
     '''
@@ -94,6 +96,7 @@ def test_net(save_folder, net, dataset, top_k,thresh=0.05):
     num_images = dataset.__len__()
     all_boxes = [[[] for _ in range(num_images)]
                  for _ in range(len(labelmap)+1)]
+    rgb_mean = np.array([123.,117.,104.])[np.newaxis, np.newaxis,:].astype('float32')
     print('test all box:',np.shape(all_boxes))
     # build save dir
     output_dir = save_folder
@@ -107,11 +110,11 @@ def test_net(save_folder, net, dataset, top_k,thresh=0.05):
             h, w, _ = img.shape
             scale = torch.Tensor([w, h,w, h])
             image = cv2.resize(img,(640,640))
-            x = to_chw_bgr(image)
-            x = x.astype('float32')
-            x -= cfg.img_mean
-            x = x[[2, 1, 0], :, :]
-            x = Variable(torch.from_numpy(x).unsqueeze(0),requires_grad=False)
+            image = image.astype(np.float32)
+            # image = image / 255.0
+            image -= rgb_mean
+            image = np.transpose(image,(2,0,1))
+            x = Variable(torch.from_numpy(image).unsqueeze(0),requires_grad=False)
             if use_cuda:
                 x = x.cuda()
             detections = net(x).data
@@ -194,8 +197,9 @@ def do_python_eval(output_dir='output', use_07=True):
         print('AP for {} = {:.4f}'.format(cls_name, ap))
         with open(os.path.join(output_dir, cls_name + '_pr.txt'), 'w') as f:
             #pickle.dump({'rec': rec, 'prec': prec, 'ap': ap}, f)
+            print(len(rec),len(prec))
             for tmp_id in range(len(rec)):
-                f.write("rec: {:.3f},prec: {:.3f},fpr: {:.3f}\n".format(rec[tmp_id],prec[tmp_id]))
+                f.write("rec: {:.3f},prec: {:.3f}\n".format(rec[tmp_id],prec[tmp_id]))
             f.write('ap: {:.3f}, pos_num: {}'.format(ap,pos_num))
     print('Mean AP = {:.4f}'.format(np.mean(aps)))
     print('~~~~~~~~')
@@ -220,7 +224,9 @@ def voc_eval(detfile,annopath,imagesetfile,classname,cachedir,ovthresh=0.5,use_0
     [ovthresh]: Overlap threshold (default = 0.5)
     [use_07_metric]: Whether to use VOC07's 11 point AP computation
     '''
-    class_recs,npos = get_annotions(cachedir,imagesetfile,annopath,classname)
+    #get gt
+    #class_recs,npos = get_annotions(cachedir,imagesetfile,annopath,classname)
+    class_recs,npos = load_annotations(annopath,classname)
     # read dets
     boxes,image_ids = get_detect_results(detfile)
     if len(boxes) >1:
@@ -322,6 +328,32 @@ def get_annotions(cachedir,imagesetfile,annopath,classname):
     imgset_f.close()
     return class_recs,npos
 
+def load_annotations(imagesetfile,classname):
+    # read list of images
+    imgset_f = open(imagesetfile, 'r')
+    lines = imgset_f.readlines()
+    class_recs = {}
+    npos = 0
+    label_num = labelmap.index(classname)+1
+    for tmp in lines:
+        tmp_splits = tmp.strip().split(',')
+        img_name = tmp_splits[0].split('/')[-1][:-4] if len(tmp_splits[0].split('/')) >0 else tmp_splits[0][:-4]
+        #img_path = os.path.join(args.img_dir,tmp_splits[0])
+        bbox_label = map(float, tmp_splits[1:])
+        if not isinstance(bbox_label,list):
+            bbox_label = list(bbox_label)
+        bbox_label = np.reshape(bbox_label,(-1,5))
+        bbox = bbox_label[:,:4]
+        labels = bbox_label[:,4]
+        keep = np.where(labels==label_num)
+        bbox = bbox[keep]
+        num = bbox.shape[0]
+        det = [False]*num
+        npos = npos + num
+        difficult = np.zeros(num).astype(np.bool)
+        class_recs[img_name] = {'bbox':bbox,'difficult':difficult,'det':det}
+    return class_recs,npos
+
 def parse_rec(filename):
     """ Parse a PASCAL VOC xml file """
     tree = ET.parse(filename)
@@ -412,11 +444,12 @@ if __name__ == '__main__':
         net.cuda()
         cudnn.benckmark = True
     print('finish loading model')
-
-    dataset = VOCDetection(cfg.HEAD.DIR, image_sets=[(args.dataset, 'test')],
-                           target_transform=VOCAnnotationTransform(),
-                           mode='test',
-                           dataset_name='SCUT')
-
+    if args.dataname == 'scut':
+        dataset = VOCDetection(cfg.HEAD.DIR, image_sets=[(args.dataset, 'test')],
+                            target_transform=VOCAnnotationTransform(),
+                            mode='test',
+                            dataset_name='SCUT')
+    elif args.dataname == 'crowedhuman':
+        dataset = ReadDataset(args.val_file,args.voc_root)
     test_net(args.save_folder, net, dataset,args.top_k, args.threshold)
     

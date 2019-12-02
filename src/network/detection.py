@@ -5,8 +5,12 @@ from __future__ import absolute_import
 from __future__ import print_function
 
 import torch
-
-from ..bbox_utils import decode, nms
+import os
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__),'../configs'))
+from config import cfg
+sys.path.append(os.path.join(os.path.dirname(__file__),'../utils'))
+from bbox_utils import decode, nms
 from torch.autograd import Function
 
 

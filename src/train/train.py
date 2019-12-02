@@ -10,7 +10,7 @@
 from __future__ import division
 from __future__ import absolute_import
 from __future__ import print_function
-
+import sys
 import os
 import cv2
 import time
@@ -25,11 +25,14 @@ import torch.utils.data as data
 import numpy as np
 from torch.autograd import Variable
 import torch.backends.cudnn as cudnn
-
-from data.config import cfg
+sys.path.append(os.path.join(os.path.dirname(__file__),'../configs'))
+from config import cfg
+sys.path.append(os.path.join(os.path.dirname(__file__),'../network'))
 from s3fd import build_s3fd
-from layers.modules import MultiBoxLoss
-from data.factory import dataset_factory, detection_collate
+sys.path.append(os.path.join(os.path.dirname(__file__),'../losses'))
+from multibox_loss import MultiBoxLoss
+sys.path.append(os.path.join(os.path.dirname(__file__),'../preparedata'))
+from factory import dataset_factory, detection_collate
 
 #os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
