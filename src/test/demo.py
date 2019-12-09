@@ -5,6 +5,7 @@ from __future__ import absolute_import
 from __future__ import print_function
 
 import os
+import sys
 import torch
 import argparse
 import torch.nn as nn
@@ -29,7 +30,7 @@ def parms():
                         help='Directory for detect result')
     parser.add_argument('--modelpath', type=str,
                         default='weights/s3fd.pth', help='trained model')
-    parser.add_argument('--threshold', default=0.6, type=float,
+    parser.add_argument('--threshold', default=0.1, type=float,
                         help='Final confidence threshold')
     parser.add_argument('--ctx', default=True, type=bool,
                         help='gpu run')
@@ -128,6 +129,7 @@ class HeadDetect(object):
         if self.use_cuda:
             bt_img = bt_img.cuda()
         output = self.net(bt_img)
+        imgorg = cv2.resize(imgorg,(640,640))
         showimg = self.label_show(output.data.cpu().numpy(),imgorg)
         return showimg,output.data.cpu().numpy()
     def label_show(self,rectangles,img):
@@ -142,7 +144,7 @@ class HeadDetect(object):
                 cv2.rectangle(img,(int(x1),int(y1)),(int(x2),int(y2)),(0,0,255),2)
                 txt = "{:.3f}".format(score)
                 point = (int(x1),int(y1-5))
-                # cv2.putText(img,txt,point,cv2.FONT_HERSHEY_COMPLEX,0.5,(0,255,0),1)
+                #cv2.putText(img,txt,point,cv2.FONT_HERSHEY_COMPLEX,0.5,(0,255,0),1)
                 j+=1
         return img
     def detect(self,imgpath):
@@ -155,6 +157,7 @@ class HeadDetect(object):
                     continue
                 showimg,_ = self.inference_img(img)
                 cv2.imshow('demo',showimg)
+                cv2.imwrite('test2.jpg',showimg)
                 cv2.waitKey(0)
         elif os.path.isfile(imgpath) and imgpath.endswith('txt'):
             # if not os.path.exists(self.save_dir):

@@ -11,11 +11,12 @@ import torch.nn as nn
 import torch.nn.init as init
 import torch.nn.functional as F
 from torch.autograd import Variable
-
-from prior_box import *
+import numpy as np
+from detection import Detect
+from prior_box import PriorBox
 sys.path.append(os.path.join(os.path.dirname(__file__),'../configs'))
 from config import cfg
-import numpy as np
+
 
 class L2Norm(nn.Module):
     def __init__(self,n_channels, scale):
