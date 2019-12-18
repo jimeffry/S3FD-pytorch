@@ -19,6 +19,7 @@ import time
 import argparse
 import numpy as np
 from tqdm import tqdm
+import math
 import pickle
 import cv2
 import torch
@@ -34,9 +35,11 @@ else:
 sys.path.append(os.path.join(os.path.dirname(__file__),'../configs'))
 from config import cfg
 sys.path.append(os.path.join(os.path.dirname(__file__),'../network'))
-from s3fd import build_s3fd
+from s3fd_test import build_s3fd
+from detection import Detect
 sys.path.append(os.path.join(os.path.dirname(__file__),'../preparedata'))
 from vochead import VOCDetection, VOCAnnotationTransform
+from load_imgs import ReadDataset
 
 
 def str2bool(v):
@@ -85,9 +88,9 @@ imgpath = os.path.join(args.voc_root, dataset, 'JPEGImages', '%s.jpg')
 imgsetpath = os.path.join(args.voc_root, dataset, 'ImageSets',
                           'Main', 'test.txt')
 labelmap = ['person']
-annopath = args.val_file
+#annopath = args.val_file
 
-def test_net(save_folder, net, dataset, top_k,thresh=0.05):
+def test_net(save_folder, net,detector, dataset, top_k,thresh=0.05):
     '''
     get all detections: result shape is [batch,class_num,topk,5]
     save all detections into all_boxes:the shape [cls,image_num,N,5], N is diffient,
@@ -117,7 +120,8 @@ def test_net(save_folder, net, dataset, top_k,thresh=0.05):
             x = Variable(torch.from_numpy(image).unsqueeze(0),requires_grad=False)
             if use_cuda:
                 x = x.cuda()
-            detections = net(x).data
+            output = net(x)
+            detections = detector(output[0],output[1],output[2]).data
             for j in range(1,detections.size(1)):
                 dets = detections[0, j, :]
                 mask =  dets[:, 0].gt(thresh).unsqueeze(1).expand_as(dets)
@@ -147,6 +151,7 @@ def test_net(save_folder, net, dataset, top_k,thresh=0.05):
     #f = open(det_file,'rb')
     #all_boxes = pickle.load(f)
     evaluate_detections(all_boxes, output_dir, dataset)
+
 
 def evaluate_detections(box_list, output_dir, dataset):
     write_voc_results_file(box_list, dataset,output_dir)
@@ -434,12 +439,48 @@ def voc_ap(rec, prec, use_07_metric=True):
         ap = np.sum((mrec[i + 1] - mrec[i]) * mpre[i + 1])
     return ap
 
+def log_average_miss_rate(precision, fp_cumsum, num_images):
+    """
+        log-average miss rate:
+            Calculated by averaging miss rates at 9 evenly spaced FPPI points
+            between 10e-2 and 10e0, in log-space.
+        output:
+                lamr | log-average miss rate
+                mr | miss rate
+                fppi | false positives per image
+        references:
+            [1] Dollar, Piotr, et al. "Pedestrian Detection: An Evaluation of the
+               State of the Art." Pattern Analysis and Machine Intelligence, IEEE
+               Transactions on 34.4 (2012): 743 - 761.
+    """
+    # if there were no detections of that class
+    if precision.size == 0:
+        lamr = 0
+        mr = 1
+        fppi = 0
+        return lamr, mr, fppi
+    fppi = fp_cumsum / float(num_images)
+    mr = (1 - precision)
+    fppi_tmp = np.insert(fppi, 0, -1.0)
+    mr_tmp = np.insert(mr, 0, 1.0)
+    # Use 9 evenly spaced reference points in log-space
+    ref = np.logspace(-2.0, 0.0, num = 9)
+    for i, ref_i in enumerate(ref):
+        # np.where() will always find at least 1 index, since min(ref) = 0.01 and min(fppi_tmp) = -1.0
+        j = np.where(fppi_tmp <= ref_i)[-1][-1]
+        ref[i] = mr_tmp[j]
+ 
+    # log(0) is undefined, so we use the np.maximum(1e-10, ref)
+    lamr = math.exp(np.mean(np.log(np.maximum(1e-10, ref))))
+ 
+    return lamr, mr, fppi
+
 if __name__ == '__main__':
     # load net
     net = build_s3fd('test', cfg.NUM_CLASSES)
     net.load_state_dict(torch.load(args.trained_model))
     net.eval()
-
+    detector = Detect(cfg)
     if use_cuda:
         net.cuda()
         cudnn.benckmark = True
@@ -451,5 +492,5 @@ if __name__ == '__main__':
                             dataset_name='SCUT')
     elif args.dataname == 'crowedhuman':
         dataset = ReadDataset(args.val_file,args.voc_root)
-    test_net(args.save_folder, net, dataset,args.top_k, args.threshold)
+    test_net(args.save_folder, net,detector, dataset,args.top_k, args.threshold)
     

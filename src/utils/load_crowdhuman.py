@@ -2,8 +2,11 @@ import numpy as np
 import os
 import shutil
 import json
-from PIL.Image import Image
+from PIL import Image
+from matplotlib import pyplot as plt
 import cv2
+from collections import defaultdict
+import tqdm
 
 def load_file(fpath):#fpath是具体的文件 ，作用：#str to list
     assert os.path.exists(fpath)  #assert() raise-if-not
@@ -78,7 +81,9 @@ def savetxt(fpath,outpath,basedir):
     fw = open(outpath,'w')
     val_cnt = 0
     per_cnt = 0
-    for idx in range(total_ims):
+    img_size_dict = defaultdict(lambda:0)
+    img_size_list = []
+    for idx in tqdm.tqdm(range(total_ims)):
         tmp_dict = records[idx]
         filename = tmp_dict['ID']+'.jpg'
         filename_s = filename.split(',')
@@ -87,7 +92,13 @@ def savetxt(fpath,outpath,basedir):
         gtboxes = tmp_dict['gtboxes']
         tmp_cnt = len(gtboxes)
         bbox_list = []
-        # imgpath = os.path.join(basedir,filename)
+        imgpath = os.path.join(basedir,filename)
+        im = Image.open(imgpath)
+        keyname = min(im.size[0],im.size[1])
+        img_size_dict[str(keyname)] +=1
+        if keyname > 4000:
+            keyname = 4000
+        img_size_list.append(keyname)
         # img = cv2.imread(imgpath)
         for at_id in range(tmp_cnt):
             cnt_dict = gtboxes[at_id]
@@ -112,7 +123,7 @@ def savetxt(fpath,outpath,basedir):
                     tmp_box[1] = 0
                 if tmp_box[2]<0 or tmp_box[3]<0:
                     continue
-                if tmp_box[3]*tmp_box[2] < 200:
+                if tmp_box[3]*tmp_box[2] < 64:
                     continue
                 if float(tmp_box[3])/float(tmp_box[2]) >2 or float(tmp_box[2])/float(tmp_box[3])>2:
                     pass
@@ -131,7 +142,22 @@ def savetxt(fpath,outpath,basedir):
     print('dataset:',total_ims)
     print('valid img:',val_cnt)
     print('person identity:',per_cnt)
-
+    plothist(img_size_list)
+    
+def plothist(datadict):
+    # xdata = datadict.keys()
+    # ydata = []
+    # for tmp in xdata:
+    #     ydata.append(datadict[tmp])
+    fig, ax = plt.subplots(1, 1, figsize=(9, 3), sharey=True)
+    # ax.bar(xdata,ydata)
+    xn,bd,paths = ax.hist(datadict,bins=50)
+    fw = open('crowdhead_imgsize_val.txt','w')
+    for idx,tmp in enumerate(xn):
+        fw.write("{}:{}\n".format(tmp,bd[idx]))
+    fw.close()
+    plt.savefig('../data/crowedhean_val.png',format='png')
+    plt.show()
 def copyimg(orgdir,disdir):
     cnts = os.listdir(orgdir)
     print('total',len(cnts))
@@ -145,5 +171,5 @@ def copyimg(orgdir,disdir):
         shutil.copyfile(orgname,savename)
 
 if __name__=='__main__':
-    savetxt('/data/detect/head/annotation_train.odgt','crowedhuman_train.txt','/data/detect/head/imgs')
+    savetxt('/data/detect/head/annotation_val.odgt','../data/crowedhuman_val.txt','/data/detect/head/imgs')
     #copyimg('/wdc/LXY.data/heads/Images','/wdc/LXY.data/heads/imgs')

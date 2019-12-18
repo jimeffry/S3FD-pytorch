@@ -3,8 +3,8 @@
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
-
-
+import os
+import sys
 import torch
 from torchvision import transforms
 import cv2
@@ -13,9 +13,9 @@ import types
 from PIL import Image, ImageEnhance, ImageDraw
 import math
 import six
-from data.config import cfg
 import random
-
+sys.path.append(os.path.join(os.path.dirname(__file__),'../configs'))
+from config import cfg
 
 class sampler():
 

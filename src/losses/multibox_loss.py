@@ -3,13 +3,15 @@
 from __future__ import division
 from __future__ import absolute_import
 from __future__ import print_function
-
+import os
+import sys
 import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-from ..bbox_utils import match, log_sum_exp, match_ssd
+sys.path.append(os.path.join(os.path.dirname(__file__),'../utils'))
+from bbox_utils import match, log_sum_exp, match_ssd
 
 
 class MultiBoxLoss(nn.Module):
@@ -68,15 +70,15 @@ class MultiBoxLoss(nn.Module):
         num = loc_data.size(0)
         priors = priors[:loc_data.size(1), :]
         num_priors = (priors.size(0))
-        num_classes = self.num_classes
+        #num_classes = self.num_classes
 
         # match priors (default boxes) and ground truth boxes
         loc_t = torch.Tensor(num, num_priors, 4)
         conf_t = torch.LongTensor(num, num_priors)
+        defaults = priors.data
         for idx in range(num):
             truths = targets[idx][:, :-1].data
             labels = targets[idx][:, -1].data
-            defaults = priors.data
             self.match(self.threshold, truths, defaults, self.variance, labels,
                        loc_t, conf_t, idx)
         if self.use_gpu:

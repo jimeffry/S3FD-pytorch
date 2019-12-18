@@ -6,13 +6,12 @@ from __future__ import print_function
 
 import sys
 import os
-
-from .egohand import HandDetection
-from .widerface import WIDERDetection
-from .vochead import VOCDetection, VOCAnnotationTransform
-
-from .load_imgs import ReadDataset
 import torch
+from egohand import HandDetection
+from widerface import WIDERDetection
+from vochead import VOCDetection, VOCAnnotationTransform
+from load_imgs import ReadDataset
+
 sys.path.append(os.path.join(os.path.dirname(__file__),'../configs'))
 from config import cfg
 
@@ -58,6 +57,6 @@ def detection_collate(batch):
     # impaths = []
     for sample in batch:
         imgs.append(sample[0])
-        targets.append(torch.from_numpy(sample[1]).float())  #torch.FloatTensor(sample[1]))
+        targets.append(torch.from_numpy(sample[1].copy()).float())  #torch.FloatTensor(sample[1]))
         # impaths.append(sample[2])
     return torch.stack(imgs, 0), targets

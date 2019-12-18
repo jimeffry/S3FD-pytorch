@@ -12,7 +12,6 @@ import torch.nn.init as init
 import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
-from detection import Detect
 from prior_box import PriorBox
 sys.path.append(os.path.join(os.path.dirname(__file__),'../configs'))
 from config import cfg
@@ -78,10 +77,6 @@ class S3FD(nn.Module):
         self.priorbox = PriorBox(cfg)
         with torch.no_grad():
             self.priors =  self.priorbox.forward()
-        if self.phase == 'test':
-            self.softmax = nn.Softmax(dim=-1)
-            self.detect = Detect(cfg)
- 
 
     def forward(self, x):
         """Applies network layers and ops on input image(s) x.
@@ -170,16 +165,7 @@ class S3FD(nn.Module):
 
         loc = torch.cat([o.view(o.size(0), -1) for o in loc], 1)
         conf = torch.cat([o.view(o.size(0), -1) for o in conf], 1)
-
-       
-        if self.phase == 'test':
-            output = self.detect(
-                loc.view(loc.size(0), -1, 4),
-                self.softmax(conf.view(conf.size(0), -1,self.num_classes)),
-                self.priors)
-
-        else:
-            output = (
+        output = (
                 loc.view(loc.size(0), -1, 4),
                 conf.view(conf.size(0), -1, self.num_classes),
                 self.priors

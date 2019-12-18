@@ -29,10 +29,13 @@ sys.path.append(os.path.join(os.path.dirname(__file__),'../configs'))
 from config import cfg
 sys.path.append(os.path.join(os.path.dirname(__file__),'../network'))
 from s3fd import build_s3fd
+from prior_box import PriorBox
 sys.path.append(os.path.join(os.path.dirname(__file__),'../losses'))
 from multibox_loss import MultiBoxLoss
 sys.path.append(os.path.join(os.path.dirname(__file__),'../preparedata'))
 from factory import dataset_factory, detection_collate
+sys.path.append(os.path.join(os.path.dirname(__file__),'../utils'))
+from bbox_utils import match
 
 #os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
@@ -80,6 +83,9 @@ def params():
     parser.add_argument('--save_folder',
                         default='weights/',
                         help='Directory for saving checkpoint models')
+    parser.add_argument('--log_dir',
+                        default='../logs',
+                        help='Directory for saving logs')
     return parser.parse_args()
 
 def train_net(args):
@@ -152,15 +158,18 @@ def createlogger(lpath):
 
 def main():
     args = params()
-    logger = createlogger('./logs')
+    logger = createlogger(args.log_dir)
     net,s3fd_net,optimizer,criterion,train_loader,val_loader = train_net(args)
     step_index = 0
-    start_epoch = 88
+    start_epoch = 0
     iteration = 0
     net.train()
     rgb_mean = np.array([123.,117.,104.])[np.newaxis, np.newaxis,:].astype('float32')
     loss_hist = collections.deque(maxlen=200)
     lamb = torch.FloatTensor([4.0])
+    # prior_box = PriorBox(cfg)
+    # with torch.no_grad():
+    #     priors =  prior_box.forward()
     if args.cuda:
         lamb = lamb.cuda()
     for epoch in range(start_epoch, cfg.EPOCHES):
@@ -170,6 +179,7 @@ def main():
                 images = images.cuda() #Variable(images.cuda())
                 targets = [ann.cuda() for ann in targets]
             '''
+            conf_t = test_anchor(targets,priors,cfg)
             images = images.cpu().numpy()
             for i in range(args.batch_size):
                 tmp_img = np.transpose(images[i],(1,2,0))
@@ -186,12 +196,21 @@ def main():
                         # print('pred',x1,y1,x2,y2,gt[j,4],w,h)
                         if x2 >x1 and y2 >y1:
                             cv2.rectangle(tmp_img,(x1,y1),(x2,y2),(0,0,255))
+                for j in range(priors.size(0)):
+                    if conf_t[i,j] >0:
+                        box = priors[j].cpu().numpy()
+                        # print(box)
+                        x1,y1 = box[:2] - box[2:] / 2
+                        x2,y2 = box[:2] + box[2:] / 2
+                        x1,y1 = int(x1*w),int(y1*h)
+                        x2,y2 = int(x2*w),int(y2*h)
+                        cv2.rectangle(tmp_img,(x1,y1),(x2,y2),(255,0,0))
                 cv2.imshow('src',tmp_img)
                 cv2.waitKey(0)
             '''
-            if iteration in cfg.LR_STEPS:
-                step_index += 1
-                adjust_learning_rate(args.lr,optimizer, args.gamma, step_index)
+            # if iteration in cfg.LR_STEPS:
+            #     step_index += 1
+            #     adjust_learning_rate(args.lr,optimizer, args.gamma, step_index)
             # t0 = time.time()
             out = net(images)
             # backprop
@@ -216,7 +235,6 @@ def main():
         if iteration == cfg.MAX_STEPS:
             break
     torch.save(s3fd_net.state_dict(),os.path.join(args.save_folder,'sfd_'+args.dataset+'_final.pth'))
-        
 
 def val(args,net,val_loader,criterion):
     net.eval()
@@ -243,6 +261,18 @@ def val(args,net,val_loader,criterion):
     #         args.save_folder, pfile))
     #     min_loss = tloss.data
 
+def test_anchor(targets,priors,cfg):
+    num_priors = priors.size(0)
+    num = len(targets)
+    loc_t = torch.Tensor(num, num_priors, 4)
+    conf_t = torch.LongTensor(num, num_priors)
+    defaults = priors.data
+    for idx in range(num):
+        truths = targets[idx][:, :-1].data
+        labels = targets[idx][:, -1].data
+        match(cfg.HEAD.OVERLAP_THRESH, truths, defaults,cfg.VARIANCE, labels,
+                       loc_t, conf_t, idx)
+    return conf_t
 
 
 def adjust_learning_rate(init_lr,optimizer, gamma, step):

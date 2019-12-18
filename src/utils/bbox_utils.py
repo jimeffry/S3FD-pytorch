@@ -125,25 +125,24 @@ def match(threshold, truths, priors, variances, labels, loc_t, conf_t, idx):
     for j in range(best_prior_idx.size(0)):
         best_truth_idx[best_prior_idx[j]] = j
     
-    # N = (torch.sum(best_prior_overlap >= th2) +
-        #  torch.sum(best_prior_overlap >= th3)) // 2
+    N = (torch.sum(best_prior_overlap >= th2) +
+         torch.sum(best_prior_overlap >= th3)) // 2
     # print("1 ..",N)
     matches = truths[best_truth_idx]          # Shape: [num_priors,4]
     conf = labels[best_truth_idx]         # Shape: [num_priors]
     conf[best_truth_overlap < th2] = 0  # label as background
 
-    # best_truth_overlap_clone = best_truth_overlap.clone()
-    # add_idx = best_truth_overlap_clone.gt(
-    #     th2).eq(best_truth_overlap_clone.lt(th3))
-    # best_truth_overlap_clone[add_idx.logical_not_()] = 0 #add_idx.logical_not_()
-    # stage2_overlap, stage2_idx = best_truth_overlap_clone.sort(descending=True)
+    best_truth_overlap_clone = best_truth_overlap.clone()
+    add_idx = best_truth_overlap_clone.gt(
+        th1).eq(best_truth_overlap_clone.lt(th2))
+    best_truth_overlap_clone[~add_idx] = 0 #add_idx.logical_not_()
+    stage2_overlap, stage2_idx = best_truth_overlap_clone.sort(descending=True)
 
-    # stage2_overlap = stage2_overlap.gt(th2)
+    stage2_overlap = stage2_overlap.gt(th1)
 
-    # if N > 0:
-    #     N = torch.sum(stage2_overlap) if torch.sum(
-    #         stage2_overlap) < N else N
-    #     conf[stage2_idx[:N]] += 1
+    if N > 0:
+        N = torch.sum(stage2_overlap) if torch.sum(stage2_overlap) < N else N
+        conf[stage2_idx[:N]] += 1
     loc = encode(matches, priors, variances)
     loc_t[idx] = loc    # [num_priors,4] encoded offsets to learn
     conf_t[idx] = conf  # [num_priors] top class label for each prior
@@ -267,10 +266,9 @@ def nms(boxes, scores, overlap=0.5, top_k=200):
         The indices of the kept boxes with respect to num_priors.
     """
 
-    keep = scores.new(scores.size(0)).zero_().long()
-    count = 0
+    keep = torch.Tensor(scores.size(0)).fill_(0).long()
     if boxes.numel() == 0:
-        return keep,count
+        return keep
     x1 = boxes[:, 0]
     y1 = boxes[:, 1]
     x2 = boxes[:, 2]
@@ -287,6 +285,7 @@ def nms(boxes, scores, overlap=0.5, top_k=200):
     h = boxes.new()
 
     # keep = torch.Tensor()
+    count = 0
     while idx.numel() > 0:
         i = idx[-1]  # index of current largest val
         # keep.append(i)
@@ -296,10 +295,10 @@ def nms(boxes, scores, overlap=0.5, top_k=200):
             break
         idx = idx[:-1]  # remove kept element from view
         # load bboxes of next highest vals
-        torch.index_select(x1, 0, idx, out=xx1)
-        torch.index_select(y1, 0, idx, out=yy1)
-        torch.index_select(x2, 0, idx, out=xx2)
-        torch.index_select(y2, 0, idx, out=yy2)
+        xx1 = torch.index_select(x1, 0, idx)
+        yy1 = torch.index_select(y1, 0, idx)
+        xx2 = torch.index_select(x2, 0, idx)
+        yy2 = torch.index_select(y2, 0, idx)
         # store element-wise max with next highest score
         xx1 = torch.clamp(xx1, min=x1[i])
         yy1 = torch.clamp(yy1, min=y1[i])
@@ -312,11 +311,47 @@ def nms(boxes, scores, overlap=0.5, top_k=200):
         # check sizes of xx1 and xx2.. after each iteration
         w = torch.clamp(w, min=0.0)
         h = torch.clamp(h, min=0.0)
-        inter = w * h
+        inter = w*h
         # IoU = i / (area(a) + area(b) - i)
         rem_areas = torch.index_select(area, 0, idx)  # load remaining areas)
         union = (rem_areas - inter) + area[i]
-        IoU = inter / union  # store result in iou
+        IoU = inter/union  # store result in iou
         # keep only elements with an IoU <= overlap
         idx = idx[IoU.le(overlap)]
     return keep, count
+
+def nms_py(boxes, scores, threshold=0.7,topk=200,mode='Union'):
+    pick = []
+    count = 0
+    if boxes.size()==0:
+        return pick,count
+    # print('score',np.shape(scores))
+    boxes = boxes.detach().numpy()
+    scores = scores.detach().numpy()
+    x1 = boxes[:,0]
+    y1 = boxes[:,1]
+    x2 = boxes[:,2]
+    y2 = boxes[:,3]
+    # s  = np.array(scores)
+    area = np.multiply(x2-x1+1, y2-y1+1)
+    ids = np.array(scores.argsort())
+    ids = ids[-topk:]
+    #I[-1] have hightest prob score, I[0:-1]->others
+    while len(ids)>0:
+        pick.append(ids[-1])
+        xx1 = np.maximum(x1[ids[-1]], x1[ids[0:-1]]) 
+        yy1 = np.maximum(y1[ids[-1]], y1[ids[0:-1]])
+        xx2 = np.minimum(x2[ids[-1]], x2[ids[0:-1]])
+        yy2 = np.minimum(y2[ids[-1]], y2[ids[0:-1]])
+        w = np.maximum(0.0, xx2 - xx1 + 1)
+        h = np.maximum(0.0, yy2 - yy1 + 1)
+        inter = w * h
+        if mode == 'Min':
+            iou = inter / np.minimum(area[ids[-1]], area[ids[0:-1]])
+        else:
+            iou = inter / (area[ids[-1]] + area[ids[0:-1]] - inter)
+        count +=1
+        ids = ids[np.where(iou<=threshold)[0]]
+        #print(len(ids))
+    #result_rectangle = boxes[pick].tolist()
+    return pick,count

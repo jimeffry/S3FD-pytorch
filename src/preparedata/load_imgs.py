@@ -13,8 +13,7 @@ import cv2
 import numpy as np
 import random
 import torch.utils.data as u_data
-#from convert_to_pickle import label_show
-sys.path.append(os.path.join(os.path.dirname(__file__),'./'))
+sys.path.append(os.path.join(os.path.dirname(__file__),'../configs'))
 from config import cfg
 
 
@@ -24,7 +23,7 @@ class ReadDataset(u_data.Dataset): #data.Dataset
     """
     def __init__(self,imgfiles,imgdir):
         self.crowhuman_file = imgfiles
-        self.img_size = cfg.resize_width
+        self.img_size = cfg.INPUT_SIZE
         self.crowhuman_dir = imgdir
         #self.ids = []
         self.annotations = []
@@ -76,6 +75,7 @@ class ReadDataset(u_data.Dataset): #data.Dataset
     def prepro(self,img,gt):
         img ,gt = self.mirror(img,gt)
         # img_data = self.pad_to_square(img)
+        img,gt = self.crop(img,gt[:,:4].copy(),gt[:,-1].copy(),self.img_size)
         gt = self.norm_gt(img,gt)
         img_data = self.resize_subtract_mean(img,self.img_size)
         return img_data,gt
@@ -97,7 +97,7 @@ class ReadDataset(u_data.Dataset): #data.Dataset
             boxes[:,2] = width - boxes_tmp[:,0] -1
         return image,boxes
         
-    def norm_gt (self,image,boxes_f):
+    def norm_gt(self,image,boxes_f):
         height, width, _ = image.shape
         boxes_f[:,0] = boxes_f[:,0] / float(width)
         boxes_f[:,2] = boxes_f[:,2] / float(width)
@@ -114,33 +114,70 @@ class ReadDataset(u_data.Dataset): #data.Dataset
         image -= self.rgb_mean
         return image
 
-    def re_scale(self,img):
-        img_h, img_w = img.shape[:2]
-        ratio = max(img_h, img_w) / float(self.img_size)
-        new_h = int(img_h / ratio)
-        new_w = int(img_w / ratio)
-        ox = (self.img_size - new_w) // 2
-        oy = (self.img_size - new_h) // 2
-        scaled = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
-        out = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8) 
-        out[oy:oy + new_h, ox:ox + new_w, :] = scaled
-        window = [ox,oy,new_w,new_h]
-        return out, window
-    
-    def descale(self,box,window,img_w,img_h):
-        ox,oy,new_w,new_h = window
-        xmin, ymin, xmax, ymax = box[:,:,:,1],box[:,:,:,2],box[:,:,:,3],box[:,:,:,4]
-        box[:,:,:,1] = (xmin - ox) / float(new_w) * img_w
-        box[:,:,:,2] = (ymin - oy) / float(new_h) * img_h
-        box[:,:,:,3] = (xmax - ox) / float(new_w) * img_w
-        box[:,:,:,4] = (ymax - oy) / float(new_h) * img_h
-        '''
-        box[:,:,:,1] = np.minimum(np.maximum(xmin * img_w,0),img_w)
-        box[:,:,:,2] = np.minimum(np.maximum(ymin * img_h,0),img_h)
-        box[:,:,:,3] = np.minimum(np.maximum(xmax * img_w,0),img_w)
-        box[:,:,:,4] = np.minimum(np.maximum(ymax * img_h,0),img_h)
-        '''
-        return box
+    def crop(self,image, boxes, labels, img_dim):
+        height, width, _ = image.shape
+        short_side = min(width, height)
+        if short_side > 3*img_dim:
+            PRE_SCALES = [0.2,0.3,0.4]
+        elif short_side > 2*img_dim:
+            PRE_SCALES = [0.4,0.5,0.6]
+        else:
+            PRE_SCALES = [0.6,0.7, 0.8]
+        for _ in range(20):
+            scale = random.choice(PRE_SCALES)
+            if short_side < img_dim:
+                scale = 1.0
+            w = int(scale * short_side)
+            h = w
+            if width == w:
+                l = 0
+            else:
+                l = random.randrange(width - w)
+            if height == h:
+                t = 0
+            else:
+                t = random.randrange(height - h)
+            roi = np.array((l, t, l + w, t + h))
+            value = self.matrix_iof(boxes, roi[np.newaxis])
+            flag = (value >= 1)
+            if not flag.any():
+                continue
+            centers = (boxes[:, :2] + boxes[:, 2:]) / 2
+            mask_a = np.logical_and(roi[:2] < centers, centers < roi[2:]).all(axis=1)
+            boxes_t = boxes[mask_a].copy()
+            labels_t = labels[mask_a].copy()
+            if boxes_t.shape[0] == 0:
+                continue
+            image_t = image[roi[1]:roi[3], roi[0]:roi[2]]
+            boxes_t[:, :2] = np.maximum(boxes_t[:, :2], roi[:2])
+            boxes_t[:, :2] -= roi[:2]
+            boxes_t[:, 2:] = np.minimum(boxes_t[:, 2:], roi[2:])
+            boxes_t[:, 2:] -= roi[:2]
+            # make sure that the cropped image contains at least one face > 16 pixel at training image scale
+            b_w_t = (boxes_t[:, 2] - boxes_t[:, 0] + 1) / w * img_dim
+            b_h_t = (boxes_t[:, 3] - boxes_t[:, 1] + 1) / h * img_dim
+            mask_b = np.minimum(b_w_t, b_h_t) > 0.0
+            boxes_t = boxes_t[mask_b]
+            labels_t = labels_t[mask_b]
+            if boxes_t.shape[0] == 0:
+                continue
+            labels_t = np.expand_dims(labels_t, 1)
+            targets_t = np.hstack((boxes_t, labels_t))
+            return image_t, targets_t
+        labels = np.expand_dims(labels, 1)
+        targets = np.hstack((boxes, labels))
+        return image, targets
+    def matrix_iof(self,a, b):
+        """
+        return iof of a and b, numpy version for data augenmentation
+        """
+        lt = np.maximum(a[:, np.newaxis, :2], b[:, :2])
+        rb = np.minimum(a[:, np.newaxis, 2:], b[:, 2:])
+
+        area_i = np.prod(rb - lt, axis=2) * (lt < rb).all(axis=2)
+        area_a = np.prod(a[:, 2:] - a[:, :2], axis=1)
+        return area_i / np.maximum(area_a[:, np.newaxis], 1)
+
 
 
 def detection_collate(batch):

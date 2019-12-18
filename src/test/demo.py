@@ -18,11 +18,12 @@ import time
 import numpy as np
 from tqdm import tqdm
 from matplotlib import pyplot as plt
+from torch.autograd import Variable
 sys.path.append(os.path.join(os.path.dirname(__file__),'../configs'))
 from config import cfg
 sys.path.append(os.path.join(os.path.dirname(__file__),'../network'))
 from s3fd import build_s3fd
-from torch.autograd import Variable
+from detection import Detect
 
 def parms():
     parser = argparse.ArgumentParser(description='s3df demo')
@@ -54,6 +55,8 @@ class HeadDetect(object):
         self.loadmodel(args.modelpath)
         self.threshold = args.threshold
         self.img_dir = args.img_dir
+        
+        self.detect = Detect(cfg)
 
     def loadmodel(self,modelpath):
         if self.use_cuda:
@@ -124,14 +127,18 @@ class HeadDetect(object):
         img = np.transpose(img,(2,0,1))
         return img
     def inference_img(self,imgorg):
+        t1 = time.time()
         img = self.propress(imgorg.copy())
         bt_img = Variable(torch.from_numpy(img).unsqueeze(0))
         if self.use_cuda:
             bt_img = bt_img.cuda()
         output = self.net(bt_img)
-        imgorg = cv2.resize(imgorg,(640,640))
-        showimg = self.label_show(output.data.cpu().numpy(),imgorg)
-        return showimg,output.data.cpu().numpy()
+        t2 = time.time()
+        bboxes = self.detect(output[0],output[1],output[2])
+        t3 = time.time()
+        print('consuming:',t2-t1,t3-t2)
+        showimg = self.label_show(bboxes.data.cpu().numpy(),imgorg)
+        return showimg,bboxes.data.cpu().numpy()
     def label_show(self,rectangles,img):
         imgh,imgw,_ = img.shape
         scale = np.array([imgw,imgh,imgw,imgh])
@@ -147,7 +154,7 @@ class HeadDetect(object):
                 #cv2.putText(img,txt,point,cv2.FONT_HERSHEY_COMPLEX,0.5,(0,255,0),1)
                 j+=1
         return img
-    def detect(self,imgpath):
+    def detectheads(self,imgpath):
         if os.path.isdir(imgpath):
             cnts = os.listdir(imgpath)
             for tmp in cnts:
@@ -157,7 +164,6 @@ class HeadDetect(object):
                     continue
                 showimg,_ = self.inference_img(img)
                 cv2.imshow('demo',showimg)
-                cv2.imwrite('test2.jpg',showimg)
                 cv2.waitKey(0)
         elif os.path.isfile(imgpath) and imgpath.endswith('txt'):
             # if not os.path.exists(self.save_dir):
@@ -166,8 +172,10 @@ class HeadDetect(object):
             file_cnts = f_r.readlines()
             for j in tqdm(range(len(file_cnts))):
                 tmp_file = file_cnts[j].strip()
+                if len(tmp_file.split(','))>0:
+                    tmp_file = tmp_file.split(',')[0]
                 if not tmp_file.endswith('jpg'):
-                    tmp_file = tmp_file +'.jpg'
+                    tmp_file = tmp_file +'.jpeg'
                 tmp_path = os.path.join(self.img_dir,tmp_file) 
                 if not os.path.exists(tmp_path):
                     print(tmp_path)
@@ -178,9 +186,9 @@ class HeadDetect(object):
                     continue
                 frame,_ = self.inference_img(img)                
                 cv2.imshow('result',frame)
-                cv2.waitKey(0)               
                 #savepath = os.path.join(self.save_dir,save_name)
-                #cv2.imwrite(savepath,frame)
+                cv2.imwrite('test.jpg',frame)
+                cv2.waitKey(0) 
         elif os.path.isfile(imgpath) and imgpath.endswith(('.mp4','.avi')) :
             cap = cv2.VideoCapture(imgpath)
             if not cap.isOpened():
@@ -206,7 +214,7 @@ class HeadDetect(object):
                 # self.display_hotmap(hotmaps)
                 # keybindings for display
                 cv2.imshow('result',frame)
-                cv2.imwrite('test1.jpg',frame)
+                cv2.imwrite('test30.jpg',frame)
                 key = cv2.waitKey(0) 
         else:
             print('please input the right img-path')

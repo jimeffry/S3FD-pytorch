@@ -19,11 +19,10 @@ _C.filter_min_face = True
 #_C.LR_STEPS = (120, 198, 250)
 _C.MAX_STEPS = 200000
 _C.LR_STEPS = (800000,1000000,1200000)
-_C.EPOCHES = 300
+_C.EPOCHES = 600
 
 # anchor config
 _C.FEATURE_MAPS = [160, 80, 40, 20, 10, 5]
-_C.INPUT_SIZE = 640
 _C.STEPS = [4, 8, 16, 32, 64, 128]
 _C.ANCHOR_SIZES = [16, 32, 64, 128, 256, 512]
 _C.CLIP = False
@@ -62,6 +61,6 @@ _C.HEAD = EasyDict()
 _C.HEAD.DIR = '/data/detect/Scut_Head/'
 _C.HEAD.OVERLAP_THRESH = [0.1, 0.35, 0.5]
 # crowedhuman
-_C.crowedhuman_train_file = 'crowedhuman_train.txt'
-_C.crowedhuman_val_file = 'crowedhuman_val.txt'
+_C.crowedhuman_train_file = '../data/crowedhuman_train.txt'
+_C.crowedhuman_val_file = '../data/crowedhuman_val.txt'
 _C.crowedhuman_dir = '/data/detect/head/imgs'

@@ -8,7 +8,7 @@ Updated by: Ellis Brown, Max deGroot
 from __future__ import division
 from __future__ import print_function
 from __future__ import absolute_import
-
+import os
 import os.path as osp
 import sys
 import torch
@@ -21,8 +21,9 @@ if sys.version_info[0] == 2:
     import xml.etree.cElementTree as ET
 else:
     import xml.etree.ElementTree as ET
-from utils.augmentations import preprocess
 from PIL import ImageDraw, Image
+sys.path.append(os.path.join(os.path.dirname(__file__),'../utils'))
+from augmentations import preprocess
 
 
 class VOCAnnotationTransform(object):
@@ -108,13 +109,13 @@ class VOCDetection(data.Dataset):
             for line in open(osp.join(rootpath, 'ImageSets', 'Main', name + '.txt')):
                 self.ids.append((rootpath, line.strip()))
 
+    def __len__(self):
+        return len(self.ids)
+
     def __getitem__(self, index):
         im, gt = self.pull_item(index)
 
         return im, gt
-
-    def __len__(self):
-        return len(self.ids)
 
     def pull_item(self, index):
         while True:
@@ -168,39 +169,3 @@ class VOCDetection(data.Dataset):
             img.convert('RGB')
         img = np.array(img)
         return img
-
-    def pull_anno(self, index):
-        '''Returns the original annotation of image at index
-
-        Note: not using self.__getitem__(), as any transformations passed in
-        could mess up this functionality.
-
-        Argument:
-            index (int): index of img to get annotation of
-        Return:
-            list:  [img_id, [(label, bbox coords),...]]
-                eg: ('001718', [('dog', (96, 13, 438, 332))])
-        '''
-        img_id = self.ids[index]
-        anno = ET.parse(self._annopath % img_id).getroot()
-        gt = self.target_transform(anno, 1, 1)
-        return img_id[1], gt
-
-    def pull_tensor(self, index):
-        '''Returns the original image at an index in tensor form
-
-        Note: not using self.__getitem__(), as any transformations passed in
-        could mess up this functionality.
-
-        Argument:
-            index (int): index of img to show
-        Return:
-            tensorized version of img, squeezed
-        '''
-        return torch.Tensor(self.pull_image(index)).unsqueeze_(0)
-
-
-if __name__ == '__main__':
-    from config import cfg
-    dataset = VOCDetection(cfg.HEAD.DIR)
-    dataset.pull_item(0)

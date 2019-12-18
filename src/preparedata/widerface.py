@@ -3,13 +3,15 @@
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
-
+import os
+import sys
 import torch
 from PIL import Image, ImageDraw
 import torch.utils.data as data
 import numpy as np
 import random
-from utils.augmentations import preprocess
+sys.path.append(os.path.join(os.path.dirname(__file__),'../utils'))
+from augmentations import preprocess
 
 
 class WIDERDetection(data.Dataset):
