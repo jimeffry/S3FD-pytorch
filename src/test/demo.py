@@ -23,7 +23,11 @@ sys.path.append(os.path.join(os.path.dirname(__file__),'../configs'))
 from config import cfg
 sys.path.append(os.path.join(os.path.dirname(__file__),'../network'))
 from s3fd import build_s3fd
-from detection import Detect
+from vgg16 import S3FD
+from prior_box import PriorBox
+from detection import Detect,Detect_demo
+sys.path.append(os.path.join(os.path.dirname(__file__),'../utils'))
+from bbox_utils import nms,nms_py
 
 def parms():
     parser = argparse.ArgumentParser(description='s3df demo')
@@ -56,14 +60,20 @@ class HeadDetect(object):
         self.threshold = args.threshold
         self.img_dir = args.img_dir
         
-        self.detect = Detect(cfg)
+        # self.detect = Detect(cfg)
+        self.detect = Detect_demo(cfg)
+        self.Prior = PriorBox(cfg)
+        with torch.no_grad():
+            self.priors =  self.Prior()
 
     def loadmodel(self,modelpath):
         if self.use_cuda:
             device = 'cuda'
         else:
             device = 'cpu'
-        self.net = build_s3fd('test', cfg.NUM_CLASSES)
+        # self.net = build_s3fd('test', cfg.NUM_CLASSES)
+        self.net = S3FD(cfg.NUM_CLASSES)
+        # print(self.net)
         self.net.load_state_dict(torch.load(modelpath,map_location=device))
         self.net.eval()
         if self.use_cuda:
@@ -134,25 +144,64 @@ class HeadDetect(object):
             bt_img = bt_img.cuda()
         output = self.net(bt_img)
         t2 = time.time()
-        bboxes = self.detect(output[0],output[1],output[2])
+        with torch.no_grad():
+            bboxes = self.detect(output[0],output[1],self.priors)
+        bboxes = self.nms_filter(bboxes)
         t3 = time.time()
         print('consuming:',t2-t1,t3-t2)
-        showimg = self.label_show(bboxes.data.cpu().numpy(),imgorg)
-        return showimg,bboxes.data.cpu().numpy()
+        showimg = self.label_show(bboxes,imgorg)
+        # return showimg,bboxes.data.cpu().numpy()
+        return showimg,bboxes
+
+    def nms_filter(self,bboxes):
+        scale = np.array([640,640,640,640])[np.newaxis,]
+        boxes = bboxes[0][0] * scale
+        scores = bboxes[0][1]
+        ids, count = nms_py(boxes, scores, 0.2,1000)
+        boxes = boxes[ids[:count]]
+        scores = scores[ids[:count]]
+        return [[boxes,scores]]
+
     def label_show(self,rectangles,img):
+        # rectangles = rectangles.data.cpu().numpy()
+        img = cv2.resize(img,(640,640))
         imgh,imgw,_ = img.shape
         scale = np.array([imgw,imgh,imgw,imgh])
-        for i in range(rectangles.shape[1]):
-            j = 0
-            while rectangles[0,i,j,0] >= self.threshold:
-                score = rectangles[0,i,j,0]
-                dets = rectangles[0,i,j,1:] * scale
-                x1,y1,x2,y2 = dets
+        bboxes_score = rectangles[0]
+        bboxes = bboxes_score[0]
+        scores = bboxes_score[1]
+        # for i in range(rectangles.shape[1]):
+        #     j = 0
+        #     while rectangles[0,i,j,0] >= self.threshold:
+        #         score = rectangles[0,i,j,0]
+        #         dets = rectangles[0,i,j,1:] * scale
+        #         x1,y1,x2,y2 = dets
+        #         min_re = min(y2-y1,x2-x1)
+        #         if min_re <=16:
+        #             thres = 0.2
+        #         else:
+        #             thres = 0.6
+        #         if score >=thres:
+        #             cv2.rectangle(img,(int(x1),int(y1)),(int(x2),int(y2)),(0,0,255),2)
+        #             txt = "{:.3f}".format(score)
+        #             point = (int(x1),int(y1-5))
+        #             # cv2.putText(img,txt,point,cv2.FONT_HERSHEY_COMPLEX,0.5,(0,255,0),1)
+        #         j+=1
+        for j in range(bboxes.shape[0]):
+            dets = bboxes[j] 
+            score = scores[j]
+            x1,y1 = dets[:2]
+            x2,y2 = dets[2:]
+            min_re = min(y2-y1,x2-x1)
+            if min_re < 16:
+                thresh = 0.12
+            else:
+                thresh = 0.9
+            if score >= thresh:
                 cv2.rectangle(img,(int(x1),int(y1)),(int(x2),int(y2)),(0,0,255),2)
-                txt = "{:.3f}".format(score)
+                txt = "{:.2f}".format(score)
                 point = (int(x1),int(y1-5))
-                #cv2.putText(img,txt,point,cv2.FONT_HERSHEY_COMPLEX,0.5,(0,255,0),1)
-                j+=1
+                # cv2.putText(img,txt,point,cv2.FONT_HERSHEY_COMPLEX,0.5,(0,255,0),1)
         return img
     def detectheads(self,imgpath):
         if os.path.isdir(imgpath):
@@ -214,7 +263,7 @@ class HeadDetect(object):
                 # self.display_hotmap(hotmaps)
                 # keybindings for display
                 cv2.imshow('result',frame)
-                cv2.imwrite('test30.jpg',frame)
+                # cv2.imwrite('test30.jpg',frame)
                 key = cv2.waitKey(0) 
         else:
             print('please input the right img-path')
@@ -223,4 +272,4 @@ if __name__ == '__main__':
     args = parms()
     detector = HeadDetect(args)
     imgpath = args.file_in
-    detector.detect(imgpath)
+    detector.detectheads(imgpath)

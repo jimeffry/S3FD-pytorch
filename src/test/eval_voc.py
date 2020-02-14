@@ -35,7 +35,7 @@ else:
 sys.path.append(os.path.join(os.path.dirname(__file__),'../configs'))
 from config import cfg
 sys.path.append(os.path.join(os.path.dirname(__file__),'../network'))
-from s3fd_test import build_s3fd
+from s3fd import build_s3fd
 from detection import Detect
 sys.path.append(os.path.join(os.path.dirname(__file__),'../preparedata'))
 from vochead import VOCDetection, VOCAnnotationTransform
@@ -45,57 +45,51 @@ from load_imgs import ReadDataset
 def str2bool(v):
     return v.lower() in ("yes", "true", "t", "1")
 
-
-parser = argparse.ArgumentParser(
-    description='Single Shot MultiBox Detector Evaluation')
-parser.add_argument('--trained_model',
-                    default='weights/ssd300_mAP_77.43_v2.pth', type=str,
-                    help='Trained state_dict file path to open')
-parser.add_argument('--save_folder', default='eval/', type=str,
-                    help='File path to save results')
-parser.add_argument('--threshold', default=0.01, type=float,
-                    help='Detection confidence threshold')
-parser.add_argument('--top_k', default=5, type=int,
-                    help='Further restrict the number of predictions to parse')
-parser.add_argument('--cuda', default=True, type=str2bool,
-                    help='Use cuda to train model')
-parser.add_argument('--voc_root',type=str, default=None,
-                    help='Location of VOC root directory')
-parser.add_argument('--cleanup', default=True, type=str2bool,
-                    help='Cleanup and remove results files following eval')
-parser.add_argument('--dataname', default='scut',
-                    type=str, help='val dataset name')
-parser.add_argument('--dataset', default='Part_A',
-                    type=str, help='test dataset')
-parser.add_argument('--val_file', default='/wdc/LXY.data/',
-                    type=str, help='test file')
-
-args = parser.parse_args()
-
-if not os.path.exists(args.save_folder):
-    os.mkdir(args.save_folder)
+def params():
+    parser = argparse.ArgumentParser(
+        description='Single Shot MultiBox Detector Evaluation')
+    parser.add_argument('--trained_model',
+                        default='weights/ssd300_mAP_77.43_v2.pth', type=str,
+                        help='Trained state_dict file path to open')
+    parser.add_argument('--save_folder', default='eval/', type=str,
+                        help='File path to save results')
+    parser.add_argument('--conf_threshold', default=0.01, type=float,
+                        help='Detection confidence threshold')
+    parser.add_argument('--nms_threshold', default=0.20, type=float,
+                        help='Detection nms threshold')
+    parser.add_argument('--top_k', default=5, type=int,
+                        help='Further restrict the number of predictions to parse')
+    parser.add_argument('--cuda', default=True, type=str2bool,
+                        help='Use cuda to train model')
+    parser.add_argument('--voc_root',type=str, default=None,
+                        help='Location of VOC root directory')
+    parser.add_argument('--use_07', default=True, type=str2bool,
+                        help=' if following voc07 eval')
+    parser.add_argument('--dataname', default='scut',
+                        type=str, help='val dataset name')
+    parser.add_argument('--dataset', default='Part_A',
+                        type=str, help='test dataset')
+    parser.add_argument('--val_file', default=None,
+                        type=str, help='test file')
+    return parser.parse_args()
 
 use_cuda = torch.cuda.is_available()
-
 if use_cuda:
     torch.set_default_tensor_type('torch.cuda.FloatTensor')
 else:
     torch.set_default_tensor_type('torch.FloatTensor')
-
-dataset = 'SCUT_HEAD_'+args.dataset
-annopath = os.path.join(args.voc_root, dataset, 'Annotations', '%s.xml')
-imgpath = os.path.join(args.voc_root, dataset, 'JPEGImages', '%s.jpg')
-imgsetpath = os.path.join(args.voc_root, dataset, 'ImageSets',
-                          'Main', 'test.txt')
-labelmap = ['person']
 #annopath = args.val_file
 
-def test_net(save_folder, net,detector, dataset, top_k,thresh=0.05):
+def test_net(net,detector,dataset,use_cuda,args):
     '''
     get all detections: result shape is [batch,class_num,topk,5]
     save all detections into all_boxes:the shape [cls,image_num,N,5], N is diffient,
                 5 clums is (x1, y1, x2, y2, score)
     '''
+    labelmap = ['person']
+    save_folder = args.save_folder
+    top_k = args.top_k
+    thresh = args.conf_threshold
     num_images = dataset.__len__()
     all_boxes = [[[] for _ in range(num_images)]
                  for _ in range(len(labelmap)+1)]
@@ -107,12 +101,15 @@ def test_net(save_folder, net,detector, dataset, top_k,thresh=0.05):
     if os.path.exists(det_file):
         f = open(det_file,'rb')
         all_boxes = pickle.load(f)
+        f.close()
     else:
         for i in tqdm(range(num_images)):
-            img = dataset.pull_image(i)
-            h, w, _ = img.shape
+            image = dataset.pull_image(i)
+            h, w, _ = image.shape
             scale = torch.Tensor([w, h,w, h])
-            image = cv2.resize(img,(640,640))
+            image = cv2.resize(image,(640,640))
+            # if min(h,w)>1080:
+            #     image = cv2.resize(image,(1080,1080))
             image = image.astype(np.float32)
             # image = image / 255.0
             image -= rgb_mean
@@ -144,20 +141,20 @@ def test_net(save_folder, net,detector, dataset, top_k,thresh=0.05):
             #         cv2.rectangle(img, leftup, right_bottom, (0, 255, 0), 2)
             # save_file = os.path.join(output_dir, '{}.jpg'.format(i + 1))
             # cv2.imwrite(save_file,img)
-        with open(det_file, 'wb') as f:
-            pickle.dump(all_boxes, f, pickle.HIGHEST_PROTOCOL)
-        write_voc_results_file(all_boxes, dataset,output_dir)
+        det_write = open(det_file, 'wb')
+        pickle.dump(all_boxes, det_write, pickle.HIGHEST_PROTOCOL)
+        write_voc_results_file(all_boxes, dataset,output_dir,labelmap)
     print('Evaluating detections')
     #f = open(det_file,'rb')
     #all_boxes = pickle.load(f)
-    evaluate_detections(all_boxes, output_dir, dataset)
+    evaluate_detections(all_boxes, dataset,labelmap,args)
 
 
-def evaluate_detections(box_list, output_dir, dataset):
-    write_voc_results_file(box_list, dataset,output_dir)
-    do_python_eval(output_dir)
+def evaluate_detections(box_list, dataset,labelmap,args):
+    write_voc_results_file(box_list, dataset,args.save_folder,labelmap)
+    do_python_eval(labelmap,args)
 
-def write_voc_results_file(all_boxes, dataset,save_dir):
+def write_voc_results_file(all_boxes, dataset,save_dir,labelmap):
     '''
     save results as the follow format: every line includes one record bbox
     imagename score x1 y1 x2 y2
@@ -185,26 +182,33 @@ def get_voc_results_file_template(cls_name,save_dir):
     path = os.path.join(filedir, filename)
     return path
 
-def do_python_eval(output_dir='output', use_07=True):
+def do_python_eval(labelmap,args):
     '''
     get mAP use07, mean precision when roc in [0,1.1,0.1]
     '''
+    dataname = 'SCUT_HEAD_'+args.dataset
+    annopath = os.path.join(args.voc_root, dataname, 'Annotations', '%s.xml')
+    imgpath = os.path.join(args.voc_root, dataname, 'JPEGImages', '%s.jpg')
+    imgsetpath = os.path.join(args.voc_root, dataname, 'ImageSets','Main', 'test.txt')
+    if args.val_file is not None:
+        annopath = args.val_file
+    output_dir = args.save_folder
     cachedir = os.path.join(output_dir, 'gt_cache')
     aps = []
     # The PASCAL VOC metric changed in 2010
-    use_07_metric = use_07
+    use_07_metric = args.use_07
     print('VOC07 metric? ' + ('Yes' if use_07_metric else 'No'))
     for i, cls_name in enumerate(labelmap):
         filename = get_voc_results_file_template(cls_name,output_dir)
-        rec, prec, ap, pos_num = voc_eval(filename, annopath, imgsetpath, cls_name, cachedir,
-           ovthresh=0.5, use_07_metric=use_07_metric)
+        rec, prec, ap, pos_num,scores = voc_eval(filename, annopath, imgsetpath, cls_name, cachedir,labelmap,args)
+        # rec, prec, ap, pos_num,scores = eval_score(filename, annopath, imgsetpath, cls_name, cachedir,labelmap,args)
         aps += [ap]
         print('AP for {} = {:.4f}'.format(cls_name, ap))
         with open(os.path.join(output_dir, cls_name + '_pr.txt'), 'w') as f:
             #pickle.dump({'rec': rec, 'prec': prec, 'ap': ap}, f)
-            print(len(rec),len(prec))
+            print(len(rec),len(prec),len(scores))
             for tmp_id in range(len(rec)):
-                f.write("rec: {:.3f},prec: {:.3f}\n".format(rec[tmp_id],prec[tmp_id]))
+                f.write("rec: {:.3f},prec: {:.3f},score: {:.3f}\n".format(rec[tmp_id],prec[tmp_id],scores[tmp_id]))
             f.write('ap: {:.3f}, pos_num: {}'.format(ap,pos_num))
     print('Mean AP = {:.4f}'.format(np.mean(aps)))
     print('~~~~~~~~')
@@ -219,7 +223,7 @@ def do_python_eval(output_dir='output', use_07=True):
     print('Results should be very close to the official MATLAB eval code.')
     print('--------------------------------------------------------------')
 
-def voc_eval(detfile,annopath,imagesetfile,classname,cachedir,ovthresh=0.5,use_07_metric=True):
+def voc_eval(detfile,annopath,imagesetfile,classname,cachedir,labelmap,args):
     '''Top level function that does the PASCAL VOC evaluation.
     detpath: detection results save path
     annopath: Path to ground_truth annotations, xml annotations file.
@@ -229,11 +233,14 @@ def voc_eval(detfile,annopath,imagesetfile,classname,cachedir,ovthresh=0.5,use_0
     [ovthresh]: Overlap threshold (default = 0.5)
     [use_07_metric]: Whether to use VOC07's 11 point AP computation
     '''
+    ovthresh = args.nms_threshold
+    use_07_metric = args.use_07
+    score_st = args.conf_threshold
     #get gt
     #class_recs,npos = get_annotions(cachedir,imagesetfile,annopath,classname)
-    class_recs,npos = load_annotations(annopath,classname)
+    class_recs,npos = load_annotations(annopath,classname,labelmap)
     # read dets
-    boxes,image_ids = get_detect_results(detfile)
+    boxes,image_ids,scores = get_detect_results(detfile,score_st)
     if len(boxes) >1:
         # go down dets and mark TPs and FPs
         detect_nums = len(image_ids)
@@ -245,6 +252,11 @@ def voc_eval(detfile,annopath,imagesetfile,classname,cachedir,ovthresh=0.5,use_0
             ovmax = -np.inf
             bbox_gt = annotations_gt['bbox'].astype(float)
             ovmax,jmax = get_IoU(bbox_gt,bb)
+            tmp_min = min(bb[2]-bb[0],bb[3]-bb[1])
+            if tmp_min <= 64:
+                ovthresh = 0.2
+            else:
+                ovthresh = 0.2
             #calculate the tp and fp, fp: not match and wrong match
             if ovmax > ovthresh:
                 if not annotations_gt['difficult'][jmax]:
@@ -266,7 +278,76 @@ def voc_eval(detfile,annopath,imagesetfile,classname,cachedir,ovthresh=0.5,use_0
         rec = -1.
         prec = -1.
         ap = -1.
-    return rec, prec, ap,npos
+    return rec, prec, ap,npos,scores
+
+def eval_score(detfile,annopath,imagesetfile,classname,cachedir,labelmap,args):
+    '''Top level function that does the PASCAL VOC evaluation.
+    detpath: detection results save path
+    annopath: Path to ground_truth annotations, xml annotations file or list of gd txt.
+    imagesetfile: Text file containing the list of images, one image per line.
+    classname: Category name (duh)
+    cachedir: Directory for saving the gt annotations
+    [use_07_metric]: False to use voc12 
+    return: calculate the ap for score threshold in [0.05,1.)
+    '''
+    ovthresh = args.nms_threshold
+    use_07_metric = args.use_07
+    #record for every score ap
+    fw = open(os.path.join(args.save_folder, classname + '_score.txt'), 'w')
+    #get gt
+    #class_recs,npos = get_annotions(cachedir,imagesetfile,annopath,classname)
+    #class_recs,npos = load_annotations(annopath,classname,labelmap)
+    # read dets
+    score_st = args.conf_threshold
+    count = 0
+    ap_sum = 0.0
+    for tmp_s in tqdm(np.arange(0.2,1,0.05)):
+        #get gt
+        #class_recs,npos = get_annotions(cachedir,imagesetfile,annopath,classname)
+        class_recs,npos = load_annotations(annopath,classname,labelmap)
+        boxes,image_ids,scores = get_detect_results(detfile,score_st)
+        detect_nums = 0
+        count +=1
+        if len(boxes) >1:
+            # go down dets and mark TPs and FPs
+            detect_nums = len(image_ids)
+            tp = np.zeros(detect_nums)
+            fp = np.zeros(detect_nums)
+            for idx in range(detect_nums):
+                annotations_gt = class_recs[image_ids[idx]]
+                bb = boxes[idx, :].astype(float)
+                ovmax = -np.inf
+                bbox_gt = annotations_gt['bbox'].astype(float)
+                ovmax,jmax = get_IoU(bbox_gt,bb)
+                #calculate the tp and fp, fp: not match and wrong match
+                if ovmax > tmp_s:
+                    if not annotations_gt['difficult'][jmax]:
+                        if not annotations_gt['det'][jmax]:
+                            tp[idx] = 1.
+                            annotations_gt['det'][jmax] = 1
+                        else:
+                            fp[idx] = 1.
+                else:
+                    fp[idx] = 1.
+            # print(np.sum(tp))
+            # compute precision recall
+            fp = np.cumsum(fp)
+            tp = np.cumsum(tp)
+            rec = tp / float(npos)
+            # avoid divide by zero in case the first detection matches a difficult ground truth
+            prec = tp / np.maximum(tp + fp, np.finfo(np.float64).eps)
+            ap = voc_ap(rec, prec, use_07_metric)
+            ap_sum += ap
+        else:
+            rec = -1.
+            prec = -1.
+            ap = -1.
+        # print(ap)
+        fw.write('thres: {:.3f},ap: {:.3f},det_nums: {}\n'.format(tmp_s,ap,detect_nums))
+    ap = ap_sum / count
+    fw.write('mAp:{}'.format(ap))
+    fw.close()
+    return rec, prec, ap,npos,scores
 
 def get_IoU(bbox_gt,bb):
     '''
@@ -314,12 +395,13 @@ def get_annotions(cachedir,imagesetfile,annopath,classname):
                    i + 1, len(imagenames)))
         # save
         print('Saving cached annotations to {:s}'.format(cachefile))
-        with open(cachefile, 'wb') as f:
-            pickle.dump(recs, f)
+        cach_w = open(cachefile, 'wb')
+        pickle.dump(recs, cach_w)
+        cach_w.close()
     else:
         # load
-        with open(cachefile, 'rb') as f:
-            recs = pickle.load(f)
+        cach_r = open(cachefile, 'rb')
+        recs = pickle.load(cach_r)
     # extract gt objects for this class
     class_recs = {}
     npos = 0
@@ -333,10 +415,11 @@ def get_annotions(cachedir,imagesetfile,annopath,classname):
     imgset_f.close()
     return class_recs,npos
 
-def load_annotations(imagesetfile,classname):
+def load_annotations(imagesetfile,classname,labelmap):
     # read list of images
     imgset_f = open(imagesetfile, 'r')
     lines = imgset_f.readlines()
+    imgset_f.close()
     class_recs = {}
     npos = 0
     label_num = labelmap.index(classname)+1
@@ -377,18 +460,20 @@ def parse_rec(filename):
         objects.append(obj_struct)
     return objects
 
-def get_detect_results(detfile):
+def get_detect_results(detfile,conf_thresh=0.05):
     '''
     load detects from detfile
     '''
-    with open(detfile, 'r') as f:
-        detection_cnts = f.readlines()
+    det_read = open(detfile, 'r')
+    detection_cnts = det_read.readlines()
     image_ids = []
     confidence = []
     boxes = []
     if len(detection_cnts) >=1:
         for tmp_cnt in detection_cnts:
             tmp_splits = tmp_cnt.strip().split(',')
+            if float(tmp_splits[1]) < conf_thresh:
+                continue
             image_ids.append(tmp_splits[0])
             confidence.append(float(tmp_splits[1]))
             tmp_box = map(float,tmp_splits[2:])
@@ -400,17 +485,19 @@ def get_detect_results(detfile):
         # sorted_scores = np.sort(confidence)[::-1]
         boxes = boxes[sorted_ind, :]
         image_ids = [image_ids[x] for x in sorted_ind]
-    return boxes,image_ids
+        confidence = confidence[sorted_ind]
+    det_read.close()
+    return boxes,image_ids,confidence
 
-def voc_ap(rec, prec, use_07_metric=True):
+def voc_ap(rec, prec, use_07_metric):
     """ ap = voc_ap(rec, prec, [use_07_metric])
     Compute VOC AP given precision and recall.
     If use_07_metric is true, uses the
     VOC 07 11 point method (default:True).
     """
+    ap = 0.
     if use_07_metric:
         # 11 point metric
-        ap = 0.
         rec_num = 0
         for t in np.arange(0., 1.1, 0.1):
             if np.sum(rec >= t) == 0:
@@ -422,6 +509,7 @@ def voc_ap(rec, prec, use_07_metric=True):
         ap = ap/11.0
         #ap = ap / float(rec_num)
     else:
+        
         # correct AP calculation
         # first append sentinel values at the end
         mrec = np.concatenate(([0.], rec, [1.]))
@@ -434,9 +522,21 @@ def voc_ap(rec, prec, use_07_metric=True):
         # to calculate area under PR curve, look for points
         # where X axis (recall) changes value
         i = np.where(mrec[1:] != mrec[:-1])[0]
-
         # and sum (\Delta recall) * prec
         ap = np.sum((mrec[i + 1] - mrec[i]) * mpre[i + 1])
+        '''
+        mrec = np.concatenate(([0.], rec, [1.]))
+        mpre = np.concatenate(([0.], prec, [0.]))
+        for i in range(len(mpre)-2, -1, -1):
+            mpre[i] = max(mpre[i], mpre[i+1])
+        
+        i_list = []
+        for i in range(1, len(mrec)):
+            if mrec[i] != mrec[i-1]:
+                i_list.append(i) # if it was matlab would be i + 1
+        for i in i_list:
+            ap += ((mrec[i]-mrec[i-1])*mpre[i])
+        '''
     return ap
 
 def log_average_miss_rate(precision, fp_cumsum, num_images):
@@ -477,6 +577,14 @@ def log_average_miss_rate(precision, fp_cumsum, num_images):
 
 if __name__ == '__main__':
     # load net
+    args = params()
+    if not os.path.exists(args.save_folder):
+        os.mkdir(args.save_folder)
+    # use_cuda = torch.cuda.is_available()
+    # if use_cuda:
+    #     torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    # else:
+    #     torch.set_default_tensor_type('torch.FloatTensor')
     net = build_s3fd('test', cfg.NUM_CLASSES)
     net.load_state_dict(torch.load(args.trained_model))
     net.eval()
@@ -492,5 +600,5 @@ if __name__ == '__main__':
                             dataset_name='SCUT')
     elif args.dataname == 'crowedhuman':
         dataset = ReadDataset(args.val_file,args.voc_root)
-    test_net(args.save_folder, net,detector, dataset,args.top_k, args.threshold)
+    test_net(net,detector,dataset,use_cuda,args)
     

@@ -267,8 +267,9 @@ def nms(boxes, scores, overlap=0.5, top_k=200):
     """
 
     keep = torch.Tensor(scores.size(0)).fill_(0).long()
+    count = 0
     if boxes.numel() == 0:
-        return keep
+        return keep,count
     x1 = boxes[:, 0]
     y1 = boxes[:, 1]
     x2 = boxes[:, 2]
@@ -285,7 +286,7 @@ def nms(boxes, scores, overlap=0.5, top_k=200):
     h = boxes.new()
 
     # keep = torch.Tensor()
-    count = 0
+    
     while idx.numel() > 0:
         i = idx[-1]  # index of current largest val
         # keep.append(i)
@@ -323,11 +324,11 @@ def nms(boxes, scores, overlap=0.5, top_k=200):
 def nms_py(boxes, scores, threshold=0.7,topk=200,mode='Union'):
     pick = []
     count = 0
-    if boxes.size()==0:
+    if len(boxes)==0:
         return pick,count
     # print('score',np.shape(scores))
-    boxes = boxes.detach().numpy()
-    scores = scores.detach().numpy()
+    # boxes = boxes.detach().numpy().copy()
+    # scores = scores.detach().numpy().copy()
     x1 = boxes[:,0]
     y1 = boxes[:,1]
     x2 = boxes[:,2]
@@ -351,7 +352,7 @@ def nms_py(boxes, scores, threshold=0.7,topk=200,mode='Union'):
         else:
             iou = inter / (area[ids[-1]] + area[ids[0:-1]] - inter)
         count +=1
-        ids = ids[np.where(iou<=threshold)[0]]
-        #print(len(ids))
+        ids = ids[np.where(iou<threshold)[0]]
+        # print(len(ids))
     #result_rectangle = boxes[pick].tolist()
     return pick,count

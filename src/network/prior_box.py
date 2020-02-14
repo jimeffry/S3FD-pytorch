@@ -31,7 +31,7 @@ class PriorBox(object):
         self.feature_maps = cfg.FEATURE_MAPS
 
 
-    def forward(self):
+    def __call__(self):
         mean = []
         for k in range(len(self.feature_maps)):
             feath = self.feature_maps[k]

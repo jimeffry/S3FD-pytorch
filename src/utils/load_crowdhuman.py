@@ -98,7 +98,7 @@ def savetxt(fpath,outpath,basedir):
         img_size_dict[str(keyname)] +=1
         if keyname > 4000:
             keyname = 4000
-        img_size_list.append(keyname)
+        # img_size_list.append(keyname)
         # img = cv2.imread(imgpath)
         for at_id in range(tmp_cnt):
             cnt_dict = gtboxes[at_id]
@@ -123,7 +123,7 @@ def savetxt(fpath,outpath,basedir):
                     tmp_box[1] = 0
                 if tmp_box[2]<0 or tmp_box[3]<0:
                     continue
-                if tmp_box[3]*tmp_box[2] < 64:
+                if tmp_box[3]*tmp_box[2] < 256:
                     continue
                 if float(tmp_box[3])/float(tmp_box[2]) >2 or float(tmp_box[2])/float(tmp_box[3])>2:
                     pass
@@ -133,30 +133,32 @@ def savetxt(fpath,outpath,basedir):
                     tmp_box.extend([1])
                     bbox_list.extend(tmp_box)
                     per_cnt +=1
+        if len(bbox_list)>=100:
+            img_size_list.append(keyname)
         if len(bbox_list)>0:
             val_cnt +=1
-            #per_cnt = per_cnt + len(bbox_list)
             bbox_list = list(map(str,bbox_list))
             tmp_str = ','.join(bbox_list)
             fw.write("{},{}\n".format(filename,tmp_str))
     print('dataset:',total_ims)
     print('valid img:',val_cnt)
     print('person identity:',per_cnt)
-    plothist(img_size_list)
+    # plothist(img_size_list)
     
 def plothist(datadict):
     # xdata = datadict.keys()
     # ydata = []
     # for tmp in xdata:
     #     ydata.append(datadict[tmp])
+    print('total plt:',len(datadict))
     fig, ax = plt.subplots(1, 1, figsize=(9, 3), sharey=True)
     # ax.bar(xdata,ydata)
     xn,bd,paths = ax.hist(datadict,bins=50)
-    fw = open('crowdhead_imgsize_val.txt','w')
+    fw = open('../data/crowdhead_imgsize_100val.txt','w')
     for idx,tmp in enumerate(xn):
         fw.write("{}:{}\n".format(tmp,bd[idx]))
     fw.close()
-    plt.savefig('../data/crowedhean_val.png',format='png')
+    plt.savefig('../data/crowdhead_100val.png',format='png')
     plt.show()
 def copyimg(orgdir,disdir):
     cnts = os.listdir(orgdir)
@@ -170,6 +172,19 @@ def copyimg(orgdir,disdir):
         orgname = os.path.join(orgdir,tmp)
         shutil.copyfile(orgname,savename)
 
+def check_widerface(imgdir):
+    img_size_list = []
+    for dir1 in os.listdir(imgdir):
+        tmp_dir = os.path.join(imgdir,dir1.strip())
+        for dir2 in os.listdir(tmp_dir):
+            imgpath = os.path.join(tmp_dir,dir2.strip())
+            img = Image.open(imgpath)
+            keyname = min(img.size[0],img.size[1])
+            img_size_list.append(keyname)
+    plothist(img_size_list)
+
+
 if __name__=='__main__':
-    savetxt('/data/detect/head/annotation_val.odgt','../data/crowedhuman_val.txt','/data/detect/head/imgs')
+    savetxt('/data/detect/head/annotation_val.odgt','../data/crowedhuman_val_256.txt','/data/detect/head/imgs')
     #copyimg('/wdc/LXY.data/heads/Images','/wdc/LXY.data/heads/imgs')
+    #check_widerface('/mnt/data/LXY.data/WIDER_train')

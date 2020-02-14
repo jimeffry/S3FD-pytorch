@@ -167,9 +167,9 @@ def main():
     rgb_mean = np.array([123.,117.,104.])[np.newaxis, np.newaxis,:].astype('float32')
     loss_hist = collections.deque(maxlen=200)
     lamb = torch.FloatTensor([4.0])
-    # prior_box = PriorBox(cfg)
-    # with torch.no_grad():
-    #     priors =  prior_box.forward()
+    prior_box = PriorBox(cfg)
+    with torch.no_grad():
+        priors =  prior_box.forward()
     if args.cuda:
         lamb = lamb.cuda()
     for epoch in range(start_epoch, cfg.EPOCHES):
@@ -178,7 +178,7 @@ def main():
             if args.cuda:
                 images = images.cuda() #Variable(images.cuda())
                 targets = [ann.cuda() for ann in targets]
-            '''
+            
             conf_t = test_anchor(targets,priors,cfg)
             images = images.cpu().numpy()
             for i in range(args.batch_size):
@@ -235,7 +235,7 @@ def main():
         if iteration == cfg.MAX_STEPS:
             break
     torch.save(s3fd_net.state_dict(),os.path.join(args.save_folder,'sfd_'+args.dataset+'_final.pth'))
-
+    '''
 def val(args,net,val_loader,criterion):
     net.eval()
     step = 0
