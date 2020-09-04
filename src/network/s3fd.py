@@ -1,9 +1,3 @@
-#-*- coding:utf-8 -*-
-
-from __future__ import division
-from __future__ import absolute_import
-from __future__ import print_function
-
 import os
 import sys
 import torch
@@ -12,10 +6,6 @@ import torch.nn.init as init
 import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
-from prior_box import PriorBox
-sys.path.append(os.path.join(os.path.dirname(__file__),'../configs'))
-from config import cfg
-
 
 class L2Norm(nn.Module):
     def __init__(self,n_channels, scale):
@@ -37,243 +27,224 @@ class L2Norm(nn.Module):
         out = self.weight.unsqueeze(0).unsqueeze(2).unsqueeze(3).expand_as(x) * x
         return out
 
+class VGG(object):
+    def __init__(self,batch_norm=False):
+        self.layer1 = self.block(2,3,64,maxp=False)
+        self.layer2 = self.block(2,64,128)
+        self.layer3 = self.block(3,128,256)
+        self.layer4 = self.block(3,256,512,mmode=True)
+        self.layer5 = self.block(3,512,512)
+        self.layer6 = nn.Conv2d(512,1024,kernel_size=3,padding=6,dilation=6)
+        self.layer7 = nn.Conv2d(1024,1024,kernel_size=1)
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool1 = nn.MaxPool2d(kernel_size=2,stride=2)
+
+    def conv2(self,kernel_in,kernel_out,k_size,padd=1,bnorm=False):
+        conv = nn.Conv2d(kernel_in,kernel_out,kernel_size=k_size,padding=padd)
+        norm = nn.BatchNorm2d(kernel_out)
+        relu = nn.ReLU(inplace=True)
+        if bnorm :
+            layers = [conv,norm,relu]
+        else:
+            layers = [conv,relu]
+        return layers
+    def maxpool(self,km_size=2,step=2,mode=False):
+        return [nn.MaxPool2d(kernel_size=km_size,stride=step,ceil_mode=mode)]
+
+    def block(self,n,filter_in,filter_out,batch_norm=False,mmode=False,maxp=True):
+        layers = []
+        if maxp:
+            layers.extend(self.maxpool(mode=mmode))
+        layers+=(self.conv2(filter_in,filter_out,3,bnorm=batch_norm))
+        for i in range(1,n):
+            layers.extend(self.conv2(filter_out,filter_out,3,bnorm=batch_norm))
+        return layers
+
+    def forward(self):
+        layers = []
+        layers+=self.layer1
+        layers.extend(self.layer2)
+        layers.extend(self.layer3)
+        layers.extend(self.layer4)
+        layers.extend(self.layer5)
+        layers.extend([self.maxpool1])
+        layers.extend([self.layer6])
+        layers.extend([self.relu])
+        layers.extend([self.layer7])
+        layers.extend([self.relu])
+        return layers
+
+class ExtractLayers(object):
+    def __init__(self,filter_in):
+        self.layer1 = self.conv2(filter_in,256,1,0)
+        self.layer2 = self.conv2(256,512,3,1,2)
+        self.layer3 = self.conv2(512,128,1,0)
+        self.layer4 = self.conv2(128,256,3,1,2)
+
+    def conv2(self,kernel_in,kernel_out,k_size,padd=1,step=1,bnorm=False):
+        conv = nn.Conv2d(kernel_in,kernel_out,kernel_size=k_size,padding=padd,stride=step)
+        norm = nn.BatchNorm2d(kernel_out)
+        relu = nn.ReLU(inplace=True)
+        if bnorm :
+            layers = [conv,norm,relu]
+        else:
+            # layers = [conv,relu]
+            layers = [conv]
+        return layers
+    def forward(self):
+        layers = []
+        layers += self.layer1
+        layers.extend(self.layer2)
+        layers.extend(self.layer3)
+        layers.extend(self.layer4)
+        return layers
+
+class Multibox(object):
+    def __init__(self,num_classes,prior_num=1):
+        anchors = prior_num*4
+        cls_num = num_classes * prior_num
+        self.regress_layer1 = self.conv2(256,anchors,3)
+        self.regress_layer2 = self.conv2(512,anchors,3)
+        self.regress_layer3 = self.conv2(512,anchors,3)
+        self.regress_layer4 = self.conv2(1024,anchors,3)
+        self.regress_layer5 = self.conv2(512,anchors,3)
+        self.regress_layer6 = self.conv2(256,anchors,3)
+        self.confidence_layer1 = self.conv2(256,3+(cls_num-1),3)
+        self.confidence_layer2 = self.conv2(512,cls_num,3)
+        self.confidence_layer3 = self.conv2(512,cls_num,3)
+        self.confidence_layer4 = self.conv2(1024,cls_num,3)
+        self.confidence_layer5 = self.conv2(512,cls_num,3)
+        self.confidence_layer6 = self.conv2(256,cls_num,3)
+        # iou layer
+        self.iou_layer1 = self.conv2(256,prior_num,3)
+        self.iou_layer2 = self.conv2(512,prior_num,3)
+        self.iou_layer3 = self.conv2(512,prior_num,3)
+        self.iou_layer4 = self.conv2(1024,prior_num,3)
+        self.iou_layer5 = self.conv2(512,prior_num,3)
+        self.iou_layer6 = self.conv2(256,prior_num,3)
+
+    def conv2(self,kernel_in,kernel_out,k_size,padd=1,dilate=1,bnorm=False):
+        conv = nn.Conv2d(kernel_in,kernel_out,kernel_size=k_size,padding=padd,dilation=dilate)
+        norm = nn.BatchNorm2d(kernel_out)
+        if bnorm :
+            layers = [conv,norm]
+        else:
+            layers = [conv]
+        return layers
+    def forward(self):
+        loc = list()
+        conf = list()
+        iou = list()
+        loc += self.regress_layer1
+        loc.extend(self.regress_layer2)
+        loc.extend(self.regress_layer3)
+        loc.extend(self.regress_layer4)
+        loc.extend(self.regress_layer5)
+        loc.extend(self.regress_layer6)
+        conf += self.confidence_layer1
+        conf.extend(self.confidence_layer2)
+        conf.extend(self.confidence_layer3)
+        conf.extend(self.confidence_layer4)
+        conf.extend(self.confidence_layer5)
+        conf.extend(self.confidence_layer6)
+        iou+= self.iou_layer1
+        iou.extend(self.iou_layer2)
+        iou.extend(self.iou_layer3)
+        iou.extend(self.iou_layer4)
+        iou.extend(self.iou_layer5)
+        iou.extend(self.iou_layer6)
+        return conf,loc,iou
+
 class S3FD(nn.Module):
-    """Single Shot Multibox Architecture
-    The network is composed of a base VGG network followed by the
-    added multibox conv layers.  Each multibox layer branches into
-        1) conv2d for class conf scores
-        2) conv2d for localization predictions
-        3) associated priorbox layer to produce default bounding
-           boxes specific to the layer's feature map size.
-    See: https://arxiv.org/pdf/1512.02325.pdf for more details.
-
-    Args:
-        phase: (string) Can be "test" or "train"
-        size: input image size
-        base: VGG16 layers for input, size of either 300 or 500
-        extras: extra layers that feed to multibox loc and conf layers
-        head: "multibox head" consists of loc and conf conv layers
-    """
-
-    def __init__(self, phase, base, extras, head, num_classes):
-        super(S3FD, self).__init__()
-        self.phase = phase
-        self.num_classes = num_classes
-        '''
-        self.priorbox = PriorBox(size,cfg)
-        self.priors = Variable(self.priorbox.forward(), volatile=True)
-        '''
-        # SSD network
-        self.vgg = nn.ModuleList(base)
-        # Layer learns to scale the l2 normalized features from conv4_3
+    def __init__(self,class_num,num_anchor=1):
+        super(S3FD,self).__init__()
+        net = VGG()
+        add_layers = ExtractLayers(1024) 
+        Head = Multibox(class_num,num_anchor)
+        head0,head1,head2 = Head.forward()
+        self.num_classes = class_num
+        self.vgg = nn.ModuleList(net.forward())
+        self.extras = nn.ModuleList(add_layers.forward())
+        self.conf = nn.ModuleList(head0)
+        self.loc = nn.ModuleList(head1)
+        self.iou = nn.ModuleList(head2)
         self.L2Norm3_3 = L2Norm(256, 10)
         self.L2Norm4_3 = L2Norm(512, 8)
         self.L2Norm5_3 = L2Norm(512, 5)
+        self.softmax = nn.Softmax(dim=-1)
+        self.sigmoid = nn.Sigmoid()
+        # self.num_anchors = 34125
+        self.num_anchor = num_anchor
+        self.fpn_sizes = [25600,6400,1600,400,100,25]
+        # self.weights_init()
 
-        self.extras = nn.ModuleList(extras)
-
-        self.loc = nn.ModuleList(head[0])
-        self.conf = nn.ModuleList(head[1])
-        self.priorbox = PriorBox(cfg)
-        with torch.no_grad():
-            self.priors =  self.priorbox.forward()
-
-    def forward(self, x):
-        """Applies network layers and ops on input image(s) x.
-
-        Args:
-            x: input image or batch of images. Shape: [batch,3,300,300].
-
-        Return:
-            Depending on phase:
-            test:
-                Variable(tensor) of output class label predictions,
-                confidence score, and corresponding location predictions for
-                each object detected. Shape: [batch,topk,7]
-
-            train:
-                list of concat outputs from:
-                    1: confidence layers, Shape: [batch*num_priors,num_classes]
-                    2: localization layers, Shape: [batch,num_priors*4]
-                    3: priorbox layers, Shape: [2,num_priors*4]
-        """
-        #size = x.size()[2:]
-        sources = list()
+    def forward(self,x):
+        fpn = list()
         loc = list()
         conf = list()
-
-        # apply vgg up to conv4_3 relu
-        for k in range(16):
-            x = self.vgg[k](x)
-
+        iou = list()
+        # x = x.permute(0,3,1,2)
+        for idx in range(16):
+            x = self.vgg[idx](x)
         s = self.L2Norm3_3(x)
-        sources.append(s)
-        #print('conv3:',s.size())
-        # apply vgg up to fc7
-        for k in range(16, 23):
-            x = self.vgg[k](x)
-
+        fpn.append(s)
+        for idx in range(16,23):
+            x = self.vgg[idx](x)
         s = self.L2Norm4_3(x)
-        sources.append(s)
-        #print('conv4:',s.size())
-        for k in range(23, 30):
-            x = self.vgg[k](x)
-
+        fpn.append(s)
+        for idx in range(23,30):
+            x = self.vgg[idx](x)
         s = self.L2Norm5_3(x)
-        sources.append(s)
-
-        for k in range(30, len(self.vgg)):
-            x = self.vgg[k](x)
-        sources.append(x)
-
-        # apply extra layers and cache source layer outputs
-        for k, v in enumerate(self.extras):
-            x = F.relu(v(x), inplace=True)
-            if k % 2 == 1:
-                sources.append(x)
-
-        # apply multibox head to source layers
-
-        loc_x = self.loc[0](sources[0])
-        conf_x = self.conf[0](sources[0])
-
+        fpn.append(s)
+        for idx in range(30,len(self.vgg)):
+            x = self.vgg[idx](x)
+        fpn.append(x)
+        for idx,tmp in enumerate(self.extras):
+            x = tmp(x)
+            x = F.relu(x, inplace=True)
+            if idx == 1 or idx==3:
+                fpn.append(x)
+        #calcu the class_score and location_regress
+        loc_x = self.loc[0](fpn[0])
+        conf_x = self.conf[0](fpn[0])
+        iou_x = self.iou[0](fpn[0])
         max_conf, _ = torch.max(conf_x[:, 0:3, :, :], dim=1, keepdim=True)
         conf_x = torch.cat((max_conf, conf_x[:, 3:, :, :]), dim=1)
-
         loc.append(loc_x.permute(0, 2, 3, 1).contiguous())
         conf.append(conf_x.permute(0, 2, 3, 1).contiguous())
-
-        for i in range(1, len(sources)):
-            x = sources[i]
+        iou.append(self.sigmoid(iou_x.permute(0,2,3,1).contiguous()))
+        for i in range(1, len(fpn)):
+            x = fpn[i]
+            # tmpx = self.conf[i](x)
+            # tmpy = self.loc[i](x)
+            # N,A,H,W = tmpx.shape
             conf.append(self.conf[i](x).permute(0, 2, 3, 1).contiguous())
             loc.append(self.loc[i](x).permute(0, 2, 3, 1).contiguous())
+            iou.append(self.sigmoid(self.iou[i](x).permute(0,2,3,1).contiguous()))
+            # tmpx = tmpx.view(N,-1,self.num_classes,H,W)
+            # conf.append(tmpx.permute(0,3,4,1,2))
 
-        '''
-        for (x, l, c) in zip(sources, self.loc, self.conf):
-            loc.append(l(x).permute(0, 2, 3, 1).contiguous())
-            conf.append(c(x).permute(0, 2, 3, 1).contiguous())
-        '''
-
-        # features_maps = []
-        # for i in range(len(loc)):
-        #     feat = []
-        #     feat += [loc[i].size(1), loc[i].size(2)]
-        #     features_maps += [feat]
-        #     print(i,loc[i].size(1), loc[i].size(2))
-
-         #Variable(self.priorbox.forward(), volatile=True)
-
-        loc = torch.cat([o.view(o.size(0), -1) for o in loc], 1)
-        conf = torch.cat([o.view(o.size(0), -1) for o in conf], 1)
-        output = (
-                loc.view(loc.size(0), -1, 4),
-                conf.view(conf.size(0), -1, self.num_classes),
-                self.priors
-            )
+        # loc = torch.cat([layer_tmp.view(layer_tmp.size(0), -1) for layer_tmp in loc], 1)
+        # conf = torch.cat([layer_tmp.view(layer_tmp.size(0), -1) for layer_tmp in conf], 1)
+        loc = torch.cat([layer_tmp.view(-1,self.fpn_sizes[idx]*4*self.num_anchor) for idx,layer_tmp in enumerate(loc)],1)
+        conf = torch.cat([layer_tmp.view(-1,self.fpn_sizes[idx]*self.num_anchor*self.num_classes) for idx,layer_tmp in enumerate(conf)],1)
+        iou = torch.cat([layer_tmp.view(-1,self.fpn_sizes[idx]*self.num_anchor) for idx,layer_tmp in enumerate(iou)],1)
+        # output = (loc.view(loc.size(0), -1, 4),self.softmax(conf.view(conf.size(0), -1,self.num_classes)))
+        # output = (loc.view(-1,self.num_anchors,4),self.softmax(conf.view(-1,self.num_anchors,self.num_classes)))
+        # output = (loc,conf)
+        output = (loc.view(loc.size(0), -1, 4),conf.view(conf.size(0), -1, self.num_classes),iou.view(iou.size(0),-1))
         return output
-
-    def load_weights(self, base_file):
-        other, ext = os.path.splitext(base_file)
-        if ext == '.pkl' or '.pth':
-            print('Loading weights into state dict...')
-            mdata = torch.load(base_file,
-                               map_location=lambda storage, loc: storage)
-            #weights = mdata['weight']
-            #epoch = mdata['epoch']
-            epoch=1
-            self.load_state_dict(mdata)
-            print('Finished!')
-        else:
-            print('Sorry only .pth and .pkl files supported.')
-        return epoch
-
-    def xavier(self, param):
-        init.xavier_uniform(param)
 
     def weights_init(self, m):
         if isinstance(m, nn.Conv2d):
             self.xavier(m.weight.data)
             m.bias.data.zero_()
+    def xavier(self, param):
+        init.xavier_uniform(param)
 
 
-vgg_cfg = [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'C', 512, 512, 512, 'M',
-           512, 512, 512, 'M']
-
-extras_cfg = [256, 'S', 512, 128, 'S', 256]
-
-
-def vgg(cfg, i, batch_norm=False):
-    layers = []
-    in_channels = i
-    for v in cfg:
-        if v == 'M':
-            layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
-        elif v == 'C':
-            layers += [nn.MaxPool2d(kernel_size=2, stride=2, ceil_mode=True)]
-        else:
-            conv2d = nn.Conv2d(in_channels, v, kernel_size=3, padding=1)
-            if batch_norm:
-                layers += [conv2d, nn.BatchNorm2d(v), nn.ReLU(inplace=True)]
-            else:
-                layers += [conv2d, nn.ReLU(inplace=True)]
-            in_channels = v
-    conv6 = nn.Conv2d(512, 1024, kernel_size=3, padding=6, dilation=6)
-    conv7 = nn.Conv2d(1024, 1024, kernel_size=1)
-    layers += [conv6,
-               nn.ReLU(inplace=True), conv7, nn.ReLU(inplace=True)]
-    return layers
-
-
-def add_extras(cfg, i, batch_norm=False):
-    # Extra layers added to VGG for feature scaling
-    layers = []
-    in_channels = i
-    flag = False
-    for k, v in enumerate(cfg):
-        if in_channels != 'S':
-            if v == 'S':
-                layers += [nn.Conv2d(in_channels, cfg[k + 1],
-                                     kernel_size=(1, 3)[flag], stride=2, padding=1)]
-            else:
-                layers += [nn.Conv2d(in_channels, v, kernel_size=(1, 3)[flag])]
-            flag = not flag
-        in_channels = v
-    return layers
-
-
-def multibox(vgg, extra_layers, num_classes):
-    loc_layers = []
-    conf_layers = []
-    vgg_source = [21, 28, -2]
-
-    loc_layers += [nn.Conv2d(vgg[14].out_channels, 4,
-                             kernel_size=3, padding=1)]
-    conf_layers += [nn.Conv2d(vgg[14].out_channels,
-                              3 + (num_classes-1), kernel_size=3, padding=1)]
-
-    for k, v in enumerate(vgg_source):
-        loc_layers += [nn.Conv2d(vgg[v].out_channels,
-                                 4, kernel_size=3, padding=1)]
-        conf_layers += [nn.Conv2d(vgg[v].out_channels,
-                                  num_classes, kernel_size=3, padding=1)]
-    for k, v in enumerate(extra_layers[1::2], 2):
-        loc_layers += [nn.Conv2d(v.out_channels,
-                                 4, kernel_size=3, padding=1)]
-        conf_layers += [nn.Conv2d(v.out_channels,
-                                  num_classes, kernel_size=3, padding=1)]
-    return vgg, extra_layers, (loc_layers, conf_layers)
-
-
-def build_s3fd(phase, num_classes=2):
-    base_, extras_, head_ = multibox(
-        vgg(vgg_cfg, 3), add_extras((extras_cfg), 1024), num_classes)
-    
-    return S3FD(phase, base_, extras_, head_, num_classes)
-
-
-if __name__ == '__main__':
-    net = build_s3fd('train', num_classes=2)
+if __name__=="__main__":
+    a = torch.ones([1,3,640,640])
+    net = S3FD(2)
     print(net)
-    inputs = Variable(torch.randn(4, 3, 640, 640))
-    output = net(inputs)
-
+    c= net(a)

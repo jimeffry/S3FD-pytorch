@@ -90,7 +90,7 @@ class Detect_Process(object):
             prior_data: (tensor) Prior boxes and variances from priorbox layers
                 Shape: [1,num_priors,4] 
         """
-        num = loc_data.shape[0]
+        num = loc_data.shape[0] 
         num_priors = prior_data.shape[0]
         conf_preds = np.reshape(conf_data,(num, num_priors, self.num_classes))
         conf_preds = np.transpose(conf_preds,(0,2, 1))

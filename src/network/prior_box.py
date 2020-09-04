@@ -3,10 +3,13 @@
 from __future__ import division
 from __future__ import absolute_import
 from __future__ import print_function
-
+import os
+import sys
 import torch
 from itertools import product as product
-import math
+from math import sqrt 
+sys.path.append(os.path.join(os.path.dirname(__file__),'../configs'))
+from config import cfg
 
 
 class PriorBox(object):
@@ -14,7 +17,7 @@ class PriorBox(object):
     feature map.
     """
 
-    def __init__(self,cfg):
+    def __init__(self):
         super(PriorBox, self).__init__()
         self.imh = cfg.INPUT_SIZE
         self.imw = cfg.INPUT_SIZE
@@ -25,6 +28,7 @@ class PriorBox(object):
         self.min_sizes = cfg.ANCHOR_SIZES
         self.steps = cfg.STEPS
         self.clip = cfg.CLIP
+        self.aspect_ratios = [0.5,1.0,2.0]
         for v in self.variance:
             if v <= 0:
                 raise ValueError('Variances must be greater than 0')
@@ -47,6 +51,8 @@ class PriorBox(object):
                 s_kh = self.min_sizes[k] / self.imh
 
                 mean += [cx, cy, s_kw, s_kh]
+                # for ar in self.aspect_ratios:
+                    # mean += [cx, cy, s_kw*sqrt(ar), s_kh/sqrt(ar)]
 
         output = torch.Tensor(mean).view(-1, 4)
         if self.clip:
@@ -55,7 +61,7 @@ class PriorBox(object):
 
 
 if __name__ == '__main__':
-    from data.config import cfg
-    p = PriorBox([640, 640], cfg)
-    out = p.forward()
+    # from .configs.config import cfg
+    p = PriorBox()
+    out = p()
     print(out.size())

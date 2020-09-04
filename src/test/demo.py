@@ -22,10 +22,10 @@ from torch.autograd import Variable
 sys.path.append(os.path.join(os.path.dirname(__file__),'../configs'))
 from config import cfg
 sys.path.append(os.path.join(os.path.dirname(__file__),'../network'))
-from s3fd import build_s3fd
+# from s3fd import S3FD
 from vgg16 import S3FD
 from prior_box import PriorBox
-from detection import Detect,Detect_demo
+from detection import Detect,Detect_demo,DetectIou
 sys.path.append(os.path.join(os.path.dirname(__file__),'../utils'))
 from bbox_utils import nms,nms_py
 
@@ -35,7 +35,7 @@ def parms():
                         help='Directory for detect result')
     parser.add_argument('--modelpath', type=str,
                         default='weights/s3fd.pth', help='trained model')
-    parser.add_argument('--threshold', default=0.1, type=float,
+    parser.add_argument('--threshold', default=0.05, type=float,
                         help='Final confidence threshold')
     parser.add_argument('--ctx', default=True, type=bool,
                         help='gpu run')
@@ -60,11 +60,13 @@ class HeadDetect(object):
         self.threshold = args.threshold
         self.img_dir = args.img_dir
         
-        # self.detect = Detect(cfg)
-        self.detect = Detect_demo(cfg)
-        self.Prior = PriorBox(cfg)
+        self.detect = Detect(cfg)
+        # self.detect = DetectIou(cfg)
+        # self.detect = Detect_demo(cfg)
+        self.Prior = PriorBox()
         with torch.no_grad():
             self.priors =  self.Prior()
+        self.num_classes = cfg.NUM_CLASSES
 
     def loadmodel(self,modelpath):
         if self.use_cuda:
@@ -72,13 +74,11 @@ class HeadDetect(object):
         else:
             device = 'cpu'
         # self.net = build_s3fd('test', cfg.NUM_CLASSES)
-        self.net = S3FD(cfg.NUM_CLASSES)
+        self.net = S3FD(cfg.NUM_CLASSES,cfg.NumAnchor).to(device)
         # print(self.net)
         self.net.load_state_dict(torch.load(modelpath,map_location=device))
         self.net.eval()
-        if self.use_cuda:
-            self.net.cuda()
-            cudnn.benckmark = True
+        # torch.save(self.net.state_dict(),'srd_tr.pth')
     def get_hotmaps(self,conf_maps):
         '''
         conf_maps: feature_pyramid maps for classification
@@ -146,9 +146,9 @@ class HeadDetect(object):
         t2 = time.time()
         with torch.no_grad():
             bboxes = self.detect(output[0],output[1],self.priors)
-        bboxes = self.nms_filter(bboxes)
+        # bboxes = self.nms_filter(bboxes)
         t3 = time.time()
-        print('consuming:',t2-t1,t3-t2)
+        # print('consuming:',t2-t1,t3-t2)
         showimg = self.label_show(bboxes,imgorg)
         # return showimg,bboxes.data.cpu().numpy()
         return showimg,bboxes
@@ -163,30 +163,33 @@ class HeadDetect(object):
         return [[boxes,scores]]
 
     def label_show(self,rectangles,img):
-        # rectangles = rectangles.data.cpu().numpy()
-        img = cv2.resize(img,(640,640))
+        rectangles = rectangles.data.cpu().numpy()
+        # img = cv2.resize(img,(640,640))
         imgh,imgw,_ = img.shape
         scale = np.array([imgw,imgh,imgw,imgh])
+        # print(scale)
         bboxes_score = rectangles[0]
         bboxes = bboxes_score[0]
         scores = bboxes_score[1]
-        # for i in range(rectangles.shape[1]):
-        #     j = 0
-        #     while rectangles[0,i,j,0] >= self.threshold:
-        #         score = rectangles[0,i,j,0]
-        #         dets = rectangles[0,i,j,1:] * scale
-        #         x1,y1,x2,y2 = dets
-        #         min_re = min(y2-y1,x2-x1)
-        #         if min_re <=16:
-        #             thres = 0.2
-        #         else:
-        #             thres = 0.6
-        #         if score >=thres:
-        #             cv2.rectangle(img,(int(x1),int(y1)),(int(x2),int(y2)),(0,0,255),2)
-        #             txt = "{:.3f}".format(score)
-        #             point = (int(x1),int(y1-5))
-        #             # cv2.putText(img,txt,point,cv2.FONT_HERSHEY_COMPLEX,0.5,(0,255,0),1)
-        #         j+=1
+        threslist = [0.3,0.2]
+        for i in range(1,rectangles.shape[1]):
+            j = 0
+            while rectangles[0,i,j,0] >= self.threshold:
+                score = rectangles[0,i,j,0]
+                dets = rectangles[0,i,j,1:] * scale
+                x1,y1,x2,y2 = dets
+                min_re = min(y2-y1,x2-x1)
+                if min_re <32:
+                    thres = 0.2
+                else:
+                    thres = 0.5
+                if score >=thres:
+                    cv2.rectangle(img,(int(x1),int(y1)),(int(x2),int(y2)),(0,255,0),2)
+                    txt = "{:.3f}".format(score) # cfg.shownames[i] #
+                    point = (int(x1),int(y1-5))
+                    cv2.putText(img,txt,point,cv2.FONT_HERSHEY_COMPLEX,0.5,(0,255,0),1)
+                j+=1
+        '''
         for j in range(bboxes.shape[0]):
             dets = bboxes[j] 
             score = scores[j]
@@ -194,7 +197,7 @@ class HeadDetect(object):
             x2,y2 = dets[2:]
             min_re = min(y2-y1,x2-x1)
             if min_re < 16:
-                thresh = 0.12
+                thresh = 0.5
             else:
                 thresh = 0.9
             if score >= thresh:
@@ -202,6 +205,7 @@ class HeadDetect(object):
                 txt = "{:.2f}".format(score)
                 point = (int(x1),int(y1-5))
                 # cv2.putText(img,txt,point,cv2.FONT_HERSHEY_COMPLEX,0.5,(0,255,0),1)
+        '''
         return img
     def detectheads(self,imgpath):
         if os.path.isdir(imgpath):
@@ -222,21 +226,35 @@ class HeadDetect(object):
             for j in tqdm(range(len(file_cnts))):
                 tmp_file = file_cnts[j].strip()
                 if len(tmp_file.split(','))>0:
-                    tmp_file = tmp_file.split(',')[0]
+                    tmp_splits = tmp_file.split(',')
+                    tmp_file = tmp_splits[0]
+                    gt_box = map(float,tmp_splits[1:])
+                    gt_box = np.array(list(gt_box))
+                    gt_box = gt_box.reshape([-1,5])
                 if not tmp_file.endswith('jpg'):
                     tmp_file = tmp_file +'.jpeg'
                 tmp_path = os.path.join(self.img_dir,tmp_file) 
                 if not os.path.exists(tmp_path):
-                    print(tmp_path)
+                    print("image path not exist:",tmp_path)
                     continue
                 img = cv2.imread(tmp_path) 
                 if img is None:
                     print('None',tmp)
                     continue
-                frame,_ = self.inference_img(img)                
+                frame,_ = self.inference_img(img)
+                # for idx in range(gt_box.shape[0]):
+                #     pt = gt_box[idx,:4]
+                #     i = int(gt_box[idx,4])
+                #     cv2.rectangle(frame,
+                #                 (int(pt[0]), int(pt[1])),
+                #                 (int(pt[2]), int(pt[3])),
+                #                 (0,0,255), 2)
+                h,w = frame.shape[:2]
+                if min(h,w) > 1920:
+                    frame = cv2.resize(frame,(1920,1080))          
                 cv2.imshow('result',frame)
                 #savepath = os.path.join(self.save_dir,save_name)
-                cv2.imwrite('test.jpg',frame)
+                # cv2.imwrite('test.jpg',frame)
                 cv2.waitKey(0) 
         elif os.path.isfile(imgpath) and imgpath.endswith(('.mp4','.avi')) :
             cap = cv2.VideoCapture(imgpath)
@@ -255,6 +273,7 @@ class HeadDetect(object):
             cv2.destroyAllWindows()
         elif os.path.isfile(imgpath):
             img = cv2.imread(imgpath)
+            imgname = imgpath.split('/')[-1]
             if img is not None:
                 # grab next frame
                 # update FPS counter
@@ -263,7 +282,7 @@ class HeadDetect(object):
                 # self.display_hotmap(hotmaps)
                 # keybindings for display
                 cv2.imshow('result',frame)
-                # cv2.imwrite('test30.jpg',frame)
+                cv2.imwrite(imgname,frame)
                 key = cv2.waitKey(0) 
         else:
             print('please input the right img-path')

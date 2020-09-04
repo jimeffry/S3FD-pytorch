@@ -35,8 +35,9 @@ else:
 sys.path.append(os.path.join(os.path.dirname(__file__),'../configs'))
 from config import cfg
 sys.path.append(os.path.join(os.path.dirname(__file__),'../network'))
-from s3fd import build_s3fd
-from detection import Detect
+from s3fd import S3FD
+from detection import Detect,DetectIou
+from prior_box import PriorBox
 sys.path.append(os.path.join(os.path.dirname(__file__),'../preparedata'))
 from vochead import VOCDetection, VOCAnnotationTransform
 from load_imgs import ReadDataset
@@ -80,7 +81,7 @@ else:
     torch.set_default_tensor_type('torch.FloatTensor')
 #annopath = args.val_file
 
-def test_net(net,detector,dataset,use_cuda,args):
+def test_net(net,detector,priors,dataset,use_cuda,args):
     '''
     get all detections: result shape is [batch,class_num,topk,5]
     save all detections into all_boxes:the shape [cls,image_num,N,5], N is diffient,
@@ -118,7 +119,7 @@ def test_net(net,detector,dataset,use_cuda,args):
             if use_cuda:
                 x = x.cuda()
             output = net(x)
-            detections = detector(output[0],output[1],output[2]).data
+            detections = detector(output[0],output[1],output[2],priors).data
             for j in range(1,detections.size(1)):
                 dets = detections[0, j, :]
                 mask =  dets[:, 0].gt(thresh).unsqueeze(1).expand_as(dets)
@@ -147,6 +148,7 @@ def test_net(net,detector,dataset,use_cuda,args):
     print('Evaluating detections')
     #f = open(det_file,'rb')
     #all_boxes = pickle.load(f)
+    print('write all box:',np.shape(all_boxes))
     evaluate_detections(all_boxes, dataset,labelmap,args)
 
 
@@ -253,10 +255,10 @@ def voc_eval(detfile,annopath,imagesetfile,classname,cachedir,labelmap,args):
             bbox_gt = annotations_gt['bbox'].astype(float)
             ovmax,jmax = get_IoU(bbox_gt,bb)
             tmp_min = min(bb[2]-bb[0],bb[3]-bb[1])
-            if tmp_min <= 64:
-                ovthresh = 0.2
+            if tmp_min <= 32:
+                ovthresh = 0.15
             else:
-                ovthresh = 0.2
+                ovthresh = 0.25
             #calculate the tp and fp, fp: not match and wrong match
             if ovmax > ovthresh:
                 if not annotations_gt['difficult'][jmax]:
@@ -578,6 +580,7 @@ def log_average_miss_rate(precision, fp_cumsum, num_images):
 if __name__ == '__main__':
     # load net
     args = params()
+    use_cuda = args.cuda
     if not os.path.exists(args.save_folder):
         os.mkdir(args.save_folder)
     # use_cuda = torch.cuda.is_available()
@@ -585,10 +588,13 @@ if __name__ == '__main__':
     #     torch.set_default_tensor_type('torch.cuda.FloatTensor')
     # else:
     #     torch.set_default_tensor_type('torch.FloatTensor')
-    net = build_s3fd('test', cfg.NUM_CLASSES)
+    net = S3FD(cfg.NUM_CLASSES,cfg.NumAnchor)
     net.load_state_dict(torch.load(args.trained_model))
     net.eval()
-    detector = Detect(cfg)
+    # detector = Detect(cfg)
+    detector = DetectIou(cfg)
+    anchors = PriorBox()
+    priors = anchors()
     if use_cuda:
         net.cuda()
         cudnn.benckmark = True
@@ -599,6 +605,6 @@ if __name__ == '__main__':
                             mode='test',
                             dataset_name='SCUT')
     elif args.dataname == 'crowedhuman':
-        dataset = ReadDataset(args.val_file,args.voc_root)
-    test_net(net,detector,dataset,use_cuda,args)
+        dataset = ReadDataset(args.val_file,args.voc_root,train_mode='test')
+    test_net(net,detector,priors,dataset,use_cuda,args)
     

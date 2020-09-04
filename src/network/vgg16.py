@@ -100,19 +100,21 @@ class ExtractLayers(object):
         return layers
 
 class Multibox(object):
-    def __init__(self,num_classes):
-        self.regress_layer1 = self.conv2(256,4,3)
-        self.regress_layer2 = self.conv2(512,4,3)
-        self.regress_layer3 = self.conv2(512,4,3)
-        self.regress_layer4 = self.conv2(1024,4,3)
-        self.regress_layer5 = self.conv2(512,4,3)
-        self.regress_layer6 = self.conv2(256,4,3)
-        self.confidence_layer1 = self.conv2(256,3+(num_classes-1),3)
-        self.confidence_layer2 = self.conv2(512,num_classes,3)
-        self.confidence_layer3 = self.conv2(512,num_classes,3)
-        self.confidence_layer4 = self.conv2(1024,num_classes,3)
-        self.confidence_layer5 = self.conv2(512,num_classes,3)
-        self.confidence_layer6 = self.conv2(256,num_classes,3)
+    def __init__(self,num_classes,prior_num=1):
+        anchors = prior_num*4
+        cls_num = num_classes * prior_num
+        self.regress_layer1 = self.conv2(256,anchors,3)
+        self.regress_layer2 = self.conv2(512,anchors,3)
+        self.regress_layer3 = self.conv2(512,anchors,3)
+        self.regress_layer4 = self.conv2(1024,anchors,3)
+        self.regress_layer5 = self.conv2(512,anchors,3)
+        self.regress_layer6 = self.conv2(256,anchors,3)
+        self.confidence_layer1 = self.conv2(256,3+(cls_num-1),3)
+        self.confidence_layer2 = self.conv2(512,cls_num,3)
+        self.confidence_layer3 = self.conv2(512,cls_num,3)
+        self.confidence_layer4 = self.conv2(1024,cls_num,3)
+        self.confidence_layer5 = self.conv2(512,cls_num,3)
+        self.confidence_layer6 = self.conv2(256,cls_num,3)
 
     def conv2(self,kernel_in,kernel_out,k_size,padd=1,dilate=1,bnorm=False):
         conv = nn.Conv2d(kernel_in,kernel_out,kernel_size=k_size,padding=padd,dilation=dilate)
@@ -140,12 +142,12 @@ class Multibox(object):
         return conf,loc
 
 class S3FD(nn.Module):
-    def __init__(self,class_num):
+    def __init__(self,class_num,num_anchor=1):
         super(S3FD,self).__init__()
         #self.lo = nn.Sequential(*vgg(cfg,3))
         net = VGG()
         add_layers = ExtractLayers(1024) 
-        Head = Multibox(class_num)
+        Head = Multibox(class_num,num_anchor)
         head0,head1 = Head.forward()
         self.num_classes = class_num
         self.vgg = nn.ModuleList(net.forward())
@@ -156,11 +158,16 @@ class S3FD(nn.Module):
         self.L2Norm4_3 = L2Norm(512, 8)
         self.L2Norm5_3 = L2Norm(512, 5)
         self.softmax = nn.Softmax(dim=-1)
+        # self.num_anchors = 34125
+        self.num_anchor = num_anchor
+        self.fpn_sizes = [25600,6400,1600,400,100,25]
         #self.extracts = nn.ModuleList(add_extras(extras_cfg,1024))
     def forward(self,x):
         fpn = list()
         loc = list()
         conf = list()
+        iou = list()
+        # x = x.permute(0,3,1,2)
         for idx in range(16):
             x = self.vgg[idx](x)
         s = self.L2Norm3_3(x)
@@ -190,15 +197,30 @@ class S3FD(nn.Module):
         conf.append(conf_x.permute(0, 2, 3, 1).contiguous())
         for i in range(1, len(fpn)):
             x = fpn[i]
+            # tmpx = self.conf[i](x)
+            # tmpy = self.loc[i](x)
+            # N,A,H,W = tmpx.shape
             conf.append(self.conf[i](x).permute(0, 2, 3, 1).contiguous())
             loc.append(self.loc[i](x).permute(0, 2, 3, 1).contiguous())
-        loc = torch.cat([layer_tmp.view(layer_tmp.size(0), -1) for layer_tmp in loc], 1)
-        conf = torch.cat([layer_tmp.view(layer_tmp.size(0), -1) for layer_tmp in conf], 1)
-        output = (
-                loc.view(loc.size(0), -1, 4),
-                self.softmax(conf.view(conf.size(0), -1,self.num_classes))
-            )
+            # tmpx = tmpx.view(N,-1,self.num_classes,H,W)
+            # conf.append(tmpx.permute(0,3,4,1,2))
+
+        # loc = torch.cat([layer_tmp.view(layer_tmp.size(0), -1) for layer_tmp in loc], 1)
+        # conf = torch.cat([layer_tmp.view(layer_tmp.size(0), -1) for layer_tmp in conf], 1)
+        loc = torch.cat([layer_tmp.view(-1,self.fpn_sizes[idx]*4*self.num_anchor) for idx,layer_tmp in enumerate(loc)],1)
+        conf = torch.cat([layer_tmp.view(-1,self.fpn_sizes[idx]*self.num_anchor*self.num_classes) for idx,layer_tmp in enumerate(conf)],1)
+        # output = (loc.view(loc.size(0), -1, 4),self.softmax(conf.view(conf.size(0), -1,self.num_classes)))
+        # output = (loc.view(-1,self.num_anchors,4),self.softmax(conf.view(-1,self.num_anchors,self.num_classes)))
+        # output = (loc,conf)
+        output = (loc.view(loc.size(0), -1, 4),conf.view(conf.size(0), -1, self.num_classes))
         return output
+
+    def weights_init(self, m):
+        if isinstance(m, nn.Conv2d):
+            self.xavier(m.weight.data)
+            m.bias.data.zero_()
+    def xavier(self, param):
+        init.xavier_uniform(param)
 
 
 if __name__=="__main__":

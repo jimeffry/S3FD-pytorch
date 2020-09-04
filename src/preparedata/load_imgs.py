@@ -21,9 +21,10 @@ class ReadDataset(u_data.Dataset): #data.Dataset
     """
     VOC Detection Dataset Object
     """
-    def __init__(self,imgfiles,imgdir):
+    def __init__(self,imgfiles,imgdir,train_mode='train'):
         self.crowhuman_file = imgfiles
-        self.img_size = cfg.INPUT_SIZE
+        self.img_w = cfg.resize_width
+        self.img_h = cfg.resize_height
         self.crowhuman_dir = imgdir
         self.ids = list()
         self.annotations = []
@@ -32,6 +33,7 @@ class ReadDataset(u_data.Dataset): #data.Dataset
         self.shulf_num = list(range(self.total_num))
         random.shuffle(self.shulf_num)
         self.rgb_mean = np.array([123.,117.,104.])[np.newaxis, np.newaxis,:].astype('float32')
+        self.training = train_mode
 
     def __getitem__(self, index):
         im, gt = self.pull_item(index)
@@ -68,23 +70,18 @@ class ReadDataset(u_data.Dataset): #data.Dataset
         img_data = cv2.imread(tmp_path)
         img_data = cv2.cvtColor(img_data,cv2.COLOR_BGR2RGB)
         gt_box_label = np.array(tmp_annotation[1:],dtype=np.float32).reshape(-1,5)
-        #print('load',gt_box_label) 
-        img_pro,gt_pro = self.prepro(img_data,gt_box_label)
+        # img_pro,gt_pro = self.prepro(img_data,gt_box_label)
+        if self.training=='train':
+            img_data,gt_box_label = self.mirror(img_data,gt_box_label)
+        img_pro,gt_pro = self.resize_subtract_mean(img_data,gt_box_label)
         return torch.from_numpy(img_pro).permute(2, 0, 1),gt_pro
+
     def pull_image(self,index):
         tmp_annotation = self.annotations[index]
         tmp_path = tmp_annotation[0]
         img_data = cv2.imread(tmp_path)
         img_data = cv2.cvtColor(img_data,cv2.COLOR_BGR2RGB)
         return img_data
-    
-    def prepro(self,img,gt):
-        img ,gt = self.mirror(img,gt)
-        # img_data = self.pad_to_square(img)
-        img,gt = self.crop(img,gt[:,:4].copy(),gt[:,-1].copy(),self.img_size)
-        gt = self.norm_gt(img,gt)
-        img_data = self.resize_subtract_mean(img,self.img_size)
-        return img_data,gt
 
     def pad_to_square(self,image):
         height, width, _ = image.shape
@@ -111,14 +108,58 @@ class ReadDataset(u_data.Dataset): #data.Dataset
         boxes_f[:,3] = boxes_f[:,3] / float(height)
         return boxes_f
 
-    def resize_subtract_mean(self,image,insize):
+    def resize_subtract_mean(self,image,gt):
         # interp_methods = [cv2.INTER_LINEAR, cv2.INTER_CUBIC, cv2.INTER_AREA, cv2.INTER_NEAREST, cv2.INTER_LANCZOS4]
         # interp_method = interp_methods[random.randrange(5)]
-        image = cv2.resize(image, (insize, insize), interpolation=cv2.INTER_NEAREST)
+        height,width = image.shape[:2]
+        if height < self.img_h or width < self.img_w:
+            image,gt = self.rescale(image,gt,height,width)
+        image,gt = self.cropimg(image,gt)
+        gt = self.norm_gt(image,gt)
+        # image = cv2.resize(image, (insize, insize), interpolation=cv2.INTER_NEAREST)
         image = image.astype(np.float32)
         # image = image / 255.0
         image -= self.rgb_mean
-        return image
+        return image,gt
+
+    def rescale(self,image,boxes_f,height,width):
+        # min_side = min(height,width)
+        scale = (self.img_w+10.0)/width if (self.img_w+10.0)/width > (self.img_h+10.0)/height else (self.img_h+10.0)/height
+        n_w = width * scale
+        n_h = height * scale
+        boxes_f[:,0] = boxes_f[:,0] / float(width) * n_w
+        boxes_f[:,2] = boxes_f[:,2] / float(width) * n_w
+        boxes_f[:,1] = boxes_f[:,1] / float(height) * n_h
+        boxes_f[:,3] = boxes_f[:,3] / float(height) * n_h
+        image = cv2.resize(image,(int(n_w),int(n_h)))
+        return image,boxes_f
+
+    def cropimg(self,image,gt_box):
+        h,w = image.shape[:2]
+        while 1:
+            dh,dw = int(random.random()*(h-self.img_h)),int(random.random()*(w-self.img_w))
+            nx1 = dw
+            nx2 = dw+self.img_w
+            ny1 = dh
+            ny2 = dh+self.img_h
+            img = image[ny1:ny2,nx1:nx2,:]
+            # gt = gt[dh:(dh+cfgs.IMGHeight),dw:(dw+cfgs.IMGWidth)]
+            gt = gt_box.copy()
+            keep_idx = np.where(gt[:,2]>nx1)
+            gt = gt[keep_idx]
+            keep_idx = np.where(gt[:,0]<nx2)
+            gt = gt[keep_idx]
+            keep_idx = np.where(gt[:,3]>ny1)
+            gt = gt[keep_idx]
+            keep_idx = np.where(gt[:,1]<ny2)
+            gt = gt[keep_idx]
+            gt[:,0] = np.clip(gt[:,0],nx1,nx2)-nx1
+            gt[:,2] = np.clip(gt[:,2],nx1,nx2)-nx1
+            gt[:,1] = np.clip(gt[:,1],ny1,ny2)-ny1
+            gt[:,3] = np.clip(gt[:,3],ny1,ny2)-ny1
+            if len(gt)>0:
+                break
+        return img,gt
 
     def crop(self,image, boxes, labels, img_dim):
         height, width, _ = image.shape

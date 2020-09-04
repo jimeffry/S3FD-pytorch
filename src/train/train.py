@@ -28,14 +28,15 @@ import torch.backends.cudnn as cudnn
 sys.path.append(os.path.join(os.path.dirname(__file__),'../configs'))
 from config import cfg
 sys.path.append(os.path.join(os.path.dirname(__file__),'../network'))
-from s3fd import build_s3fd
+# from s3fd import S3FD
+from vgg16 import S3FD
 from prior_box import PriorBox
 sys.path.append(os.path.join(os.path.dirname(__file__),'../losses'))
 from multibox_loss import MultiBoxLoss
 sys.path.append(os.path.join(os.path.dirname(__file__),'../preparedata'))
 from factory import dataset_factory, detection_collate
 sys.path.append(os.path.join(os.path.dirname(__file__),'../utils'))
-from bbox_utils import match
+from bbox_utils import match,match_ssd
 
 #os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
@@ -46,46 +47,20 @@ def params():
     parser = argparse.ArgumentParser(
         description='S3FD face Detector Training With Pytorch')
     train_set = parser.add_mutually_exclusive_group()
-    parser.add_argument('--dataset',
-                        default='face',
-                        choices=['hand', 'face', 'head','crowedhuman'],
-                        help='Train target')
-    parser.add_argument('--basenet',
-                        default='vgg16_reducedfc.pth',
-                        help='Pretrained base model')
-    parser.add_argument('--batch_size',
-                        default=2, type=int,
-                        help='Batch size for training')
-    parser.add_argument('--resume',
-                        default=None, type=str,
-                        help='Checkpoint state_dict file to resume training from')
-    parser.add_argument('--num_workers',
-                        default=4, type=int,
-                        help='Number of workers used in dataloading')
-    parser.add_argument('--cuda',
-                        default=True, type=str2bool,
-                        help='Use CUDA to train model')
-    parser.add_argument('--lr', '--learning-rate',
-                        default=1e-3, type=float,
-                        help='initial learning rate')
-    parser.add_argument('--momentum',
-                        default=0.9, type=float,
-                        help='Momentum value for optim')
-    parser.add_argument('--weight_decay',
-                        default=5e-4, type=float,
-                        help='Weight decay for SGD')
-    parser.add_argument('--gamma',
-                        default=0.1, type=float,
-                        help='Gamma update for SGD')
-    parser.add_argument('--multigpu',
-                        default=False, type=str2bool,
-                        help='Use mutil Gpu training')
-    parser.add_argument('--save_folder',
-                        default='weights/',
-                        help='Directory for saving checkpoint models')
-    parser.add_argument('--log_dir',
-                        default='../logs',
-                        help='Directory for saving logs')
+    parser.add_argument('--dataset',default='face',choices=['hand', 'face', 'coco','head','crowedhuman'],help='Train target')
+    parser.add_argument('--basenet',default='vgg16_reducedfc.pth',help='Pretrained base model')
+    parser.add_argument('--batch_size',default=2, type=int,help='Batch size for training')
+    parser.add_argument('--resume',default=None, type=str,help='Checkpoint state_dict file to resume training from')
+    parser.add_argument('--num_workers',default=4, type=int,help='Number of workers used in dataloading')
+    parser.add_argument('--cuda',default=True, type=str2bool,help='Use CUDA to train model')
+    parser.add_argument('--lr', '--learning-rate',default=1e-3, type=float, help='initial learning rate')
+    parser.add_argument('--momentum',default=0.9, type=float,help='Momentum value for optim')
+    parser.add_argument('--weight_decay',default=5e-4, type=float,help='Weight decay for SGD')
+    parser.add_argument('--gamma',default=0.1, type=float, help='Gamma update for SGD')
+    parser.add_argument('--multigpu',default=False, type=str2bool,help='Use mutil Gpu training')
+    parser.add_argument('--save_folder',default='weights/',help='Directory for saving checkpoint models')
+    parser.add_argument('--log_dir',default='../logs',help='Directory for saving logs')
+    parser.add_argument('--start_epoch',type=int,default=1,help='')
     return parser.parse_args()
 
 def train_net(args):
@@ -114,35 +89,37 @@ def train_net(args):
                                 collate_fn=detection_collate,
                                 pin_memory=True)
     
-    s3fd_net = build_s3fd('train', cfg.NUM_CLASSES)
-    #print(">>",net)
-    if args.resume:
-        print('Resuming training, loading {}...'.format(args.resume))
-        start_epoch = s3fd_net.load_weights(args.resume)
-    else:
-        vgg_weights = torch.load(args.save_folder + args.basenet)
-        print('Load base network....')
-        s3fd_net.vgg.load_state_dict(vgg_weights)
+    # s3fd_net = build_s3fd('train', cfg.NUM_CLASSES)
     if args.cuda:
-        if args.multigpu:
-            net = torch.nn.DataParallel(s3fd_net)
-        net = net.cuda()
-        cudnn.benckmark = True
+        device = 'cuda'
     else:
-        net = s3fd_net
-
-    if not args.resume:
+        device = 'cpu'
+    s3fd_net = S3FD(cfg.NUM_CLASSES,cfg.NumAnchor).to(device)
+    #print(">>",net)
+    if True: #not args.resume:
         print('Initializing weights...')
         s3fd_net.extras.apply(s3fd_net.weights_init)
         s3fd_net.loc.apply(s3fd_net.weights_init)
         s3fd_net.conf.apply(s3fd_net.weights_init)
+        s3fd_net.iou.apply(s3fd_net.weights_init)
+    if args.resume:
+        print('Resuming training, loading {}...'.format(args.resume))
+        # start_epoch = s3fd_net.load_weights(args.resume)
+        s3fd_net.load_state_dict(torch.load(args.resume,map_location=device),strict=False)
+    else:
+        vgg_weights = torch.load(os.path.join(args.save_folder,args.basenet),map_location=device)
+        print('Load base network....')
+        s3fd_net.vgg.load_state_dict(vgg_weights)
+    if args.multigpu:
+        s3fd_net = torch.nn.DataParallel(s3fd_net)
+        cudnn.benckmark = True
 
-    optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=args.momentum,
+    optimizer = optim.SGD(s3fd_net.parameters(), lr=args.lr, momentum=args.momentum,
                         weight_decay=args.weight_decay)
     criterion = MultiBoxLoss(cfg, args.dataset, args.cuda)
     print('Using the specified args:')
     print(args)
-    return net,s3fd_net,optimizer,criterion,train_loader,val_loader
+    return s3fd_net,optimizer,criterion,train_loader,val_loader
 
 def createlogger(lpath):
     if not os.path.exists(lpath):
@@ -159,26 +136,25 @@ def createlogger(lpath):
 def main():
     args = params()
     logger = createlogger(args.log_dir)
-    net,s3fd_net,optimizer,criterion,train_loader,val_loader = train_net(args)
-    step_index = 0
-    start_epoch = 0
+    net,optimizer,criterion,train_loader,val_loader = train_net(args)
+    start_epoch = args.start_epoch
     iteration = 0
     net.train()
     rgb_mean = np.array([123.,117.,104.])[np.newaxis, np.newaxis,:].astype('float32')
     loss_hist = collections.deque(maxlen=200)
-    lamb = torch.FloatTensor([4.0])
-    prior_box = PriorBox(cfg)
+    loss_class_min = 10.0
+    loss_reg_min = 10.0
+    prior_box = PriorBox()
     with torch.no_grad():
-        priors =  prior_box.forward()
-    if args.cuda:
-        lamb = lamb.cuda()
+        priors =  prior_box()
     for epoch in range(start_epoch, cfg.EPOCHES):
         #losses = 0
+        lr = poly_lr_scheduler(optimizer,args.lr,epoch,max_iter=cfg.EPOCHES)
         for batch_idx, (images, targets) in enumerate(train_loader):
             if args.cuda:
                 images = images.cuda() #Variable(images.cuda())
                 targets = [ann.cuda() for ann in targets]
-            
+            '''
             conf_t = test_anchor(targets,priors,cfg)
             images = images.cpu().numpy()
             for i in range(args.batch_size):
@@ -215,8 +191,9 @@ def main():
             out = net(images)
             # backprop
             optimizer.zero_grad()
-            loss_l, loss_c = criterion(out, targets)
-            loss = loss_l +  loss_c
+            # loss_l, loss_c,loss_iou = criterion(out,priors, targets)
+            loss_l, loss_c = criterion(out,priors, targets)
+            loss = loss_l +  loss_c 
             loss.backward()
             optimizer.step()
             # t1 = time.time()
@@ -224,54 +201,55 @@ def main():
             if iteration % 100 == 0:
                 #tloss = losses / 100.0
                 #print('tl',loss.data,tloss)
-                logger.info('epoch:{} || iter:{} || tloss:{:.4f}, confloss:{:.4f}, locloss:{:.4f} || lr:{:.6f}'.format(epoch,iteration,np.mean(loss_hist),loss_c.item(),loss_l.item(),optimizer.param_groups[0]['lr']))
+                logger.info('epoch:{} || iter:{} || tloss:{:.4f}, confloss:{:.4f}, locloss:{:.4f} || lr:{:.6f}'.format(epoch,iteration,np.mean(loss_hist),loss_c.item(),loss_l.item(),lr))
                 #losses = 0
-            if iteration != 0 and iteration % 10000 == 0:
-                logger.info('Saving state, iter: %d' % iteration)
-                sfile = 'sfd_' + args.dataset + '_' + repr(iteration) + '.pth'
-                torch.save(s3fd_net.state_dict(),os.path.join(args.save_folder, sfile))
+            if iteration != 0 and iteration % 100 == 0:
+                tmpl,tmpc = val(args,net,val_loader,criterion,priors,logger)
+                if tmpl < loss_reg_min or tmpc<loss_class_min:
+                    loss_reg_min = tmpl
+                    loss_class_min = tmpc
+                    logger.info('Saving state, iter: %d' % iteration)
+                    sfile = 'sfd_' + args.dataset + '_best.pth'
+                    spath = os.path.join(args.save_folder, sfile)
+                    if args.multigpu:
+                        torch.save(net.module.state_dict(),spath)
+                    else:
+                        torch.save(net.state_dict(),spath)
             iteration += 1
         #val(args,net,val_loader,criterion)
         if iteration == cfg.MAX_STEPS:
             break
-    torch.save(s3fd_net.state_dict(),os.path.join(args.save_folder,'sfd_'+args.dataset+'_final.pth'))
-    '''
-def val(args,net,val_loader,criterion):
+    # torch.save(net.state_dict(),os.path.join(args.save_folder,'sfd_'+args.dataset+'_final.pth'))
+    
+def val(args,net,val_loader,criterion,priors,logger):
     net.eval()
-    step = 0
-    t1 = time.time()
-    loss_hist = collections.deque(maxlen=200)
+    lossc_hist = list()
+    lossl_hist = list()
     for batch_idx, (images, targets) in enumerate(val_loader):
         if args.cuda:
             images = images.cuda()
             targets = [ann.cuda() for ann in targets]
         out = net(images)
-        loss_l, loss_c = criterion(out, targets)
-        loss = loss_l + loss_c
-        if loss.item()<100:
-            loss_hist.append(float(loss.item()))
-    t2 = time.time()
-    print('Timer: %.4f' % (t2 - t1))
-    print('test epoch:'  + ' || Loss:%.4f' % (np.mean(loss_hist)))
-    # global min_loss
-    # if tloss.data < min_loss:
-    #     print('Saving best state,epoch', epoch)
-    #     pfile = 'sfd_{}.pth'.format(args.dataset)
-    #     torch.save(s3fd_net.state_dict(), os.path.join(
-    #         args.save_folder, pfile))
-    #     min_loss = tloss.data
+        loss_l, loss_c = criterion(out,priors, targets)
+        # loss = loss_l + loss_c
+        # if loss.item()<100:
+        lossc_hist.append(loss_c.item())
+        lossl_hist.append(loss_l.item())
+    logger.info('val Loss_cls: {:.6f} and Loss_reg: {:.6f}'.format(np.mean(lossc_hist),np.mean(lossl_hist)))
+    return np.mean(lossl_hist),np.mean(lossc_hist)
 
 def test_anchor(targets,priors,cfg):
     num_priors = priors.size(0)
     num = len(targets)
     loc_t = torch.Tensor(num, num_priors, 4)
     conf_t = torch.LongTensor(num, num_priors)
+    soft_t = torch.Tensor(num,num_priors)
     defaults = priors.data
     for idx in range(num):
         truths = targets[idx][:, :-1].data
         labels = targets[idx][:, -1].data
-        match(cfg.HEAD.OVERLAP_THRESH, truths, defaults,cfg.VARIANCE, labels,
-                       loc_t, conf_t, idx)
+        match(cfg.HEAD.OVERLAP_THRESH, truths, defaults,cfg.VARIANCE, labels,loc_t, conf_t,soft_t, idx)
+        # match_ssd([0.3,0.5], truths, defaults, cfg.VARIANCE, labels, loc_t, conf_t, idx)
     return conf_t
 
 
@@ -284,6 +262,23 @@ def adjust_learning_rate(init_lr,optimizer, gamma, step):
     lr = init_lr * (gamma ** (step))
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
+
+def poly_lr_scheduler(optimizer, init_lr, iter, lr_decay_iter=1,
+                      max_iter=300, power=0.9):
+    """Polynomial decay of learning rate
+        :param init_lr is base learning rate
+        :param iter is a current iteration
+        :param lr_decay_iter how frequently decay occurs, default is 1
+        :param max_iter is number of maximum iterations
+        :param power is a polymomial power
+
+    """
+    # if iter % lr_decay_iter or iter > max_iter:
+    #     return optimizer
+
+    lr = init_lr*(1 - iter/max_iter)**power
+    optimizer.param_groups[0]['lr'] = lr
+    return lr
 
 
 if __name__ == '__main__':

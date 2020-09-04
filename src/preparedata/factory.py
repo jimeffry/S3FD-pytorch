@@ -36,6 +36,9 @@ def dataset_factory(dataset):
     if dataset == 'crowedhuman':
         train_dataset = ReadDataset(cfg.crowedhuman_train_file,cfg.crowedhuman_dir)
         val_dataset = ReadDataset(cfg.crowedhuman_val_file,cfg.crowedhuman_dir)
+    if dataset == 'coco':
+        train_dataset = ReadDataset(cfg.coco_train_file,cfg.cocodir)
+        val_dataset = ReadDataset(cfg.coco_val_file,cfg.cocodir)
     return train_dataset, val_dataset
 
 
